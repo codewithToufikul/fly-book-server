@@ -8,7 +8,6 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const http = require("http");
 const { Server } = require("socket.io");
 
-
 const app = express();
 const port = process.env.PORT || 5000;
 // Middleware
@@ -40,7 +39,6 @@ async function connectToMongo() {
   }
 }
 
-
 // Middleware to connect to MongoDB before every route
 app.use(async (req, res, next) => {
   try {
@@ -60,6 +58,7 @@ const bookCollections = db.collection("bookCollections");
 const onindoBookCollections = db.collection("onindoBookCollections");
 const bookTransCollections = db.collection("bookTransCollections");
 const messagesCollections = db.collection("messagesCollections");
+const notifyCollections = db.collection("notifyCollections");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
 // Create text index on opinions collection when the server starts
 (async () => {
@@ -184,7 +183,7 @@ app.post("/users/login", async (req, res) => {
     }
 
     const token = jwt.sign({ id: user._id, number: user.number }, JWT_SECRET, {
-      expiresIn: "1d",
+      expiresIn: "30d",
     });
     res.json({ token });
   } catch (error) {
@@ -1922,6 +1921,43 @@ app.post("/api/send-message", async (req, res) => {
   }
 });
 
+app.delete("/api/delete-message/:messageId", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { messageId } = req.params;
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(404).json({ error: "User Not Found." });
+    }
+
+    // Delete the message from the database
+    const result = await messagesCollections.deleteOne({
+      _id: ObjectId(messageId),
+      $or: [{ senderId: user._id }, { receoientId: user._id }],
+    });
+
+    if (result.deletedCount === 0) {
+      return res
+        .status(404)
+        .json({ error: "Message not found or access denied." });
+    }
+
+    res.send({
+      success: true,
+      message: "Message deleted successfully.",
+    });
+  } catch (error) {
+    console.error("Error deleting message:", error);
+    res.status(500).json({ error: "Failed to delete the message." });
+  }
+});
+
 app.get("/api/chat-users", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
@@ -1939,12 +1975,14 @@ app.get("/api/chat-users", async (req, res) => {
     }
 
     // Fetch chat history: Messages where the user is either the sender or receiver
-    const chats = await messagesCollections.find({
-      $or: [
-        { senderId: ObjectId(user._id) },
-        { receoientId: ObjectId(user._id) }
-      ]
-    }).toArray();
+    const chats = await messagesCollections
+      .find({
+        $or: [
+          { senderId: ObjectId(user._id) },
+          { receoientId: ObjectId(user._id) },
+        ],
+      })
+      .toArray();
 
     if (chats.length === 0) {
       return res.status(404).json({ error: "No chat history found." });
@@ -1953,30 +1991,53 @@ app.get("/api/chat-users", async (req, res) => {
     // Extract unique user IDs from chat history
     const uniqueUserIds = [
       ...new Set(
-        chats.map(msg => msg.senderId.toString() === user._id.toString() ? msg.receoientId.toString() : msg.senderId.toString())
-      )
+        chats.map((msg) =>
+          msg.senderId.toString() === user._id.toString()
+            ? msg.receoientId.toString()
+            : msg.senderId.toString()
+        )
+      ),
     ];
 
     // Fetch user details (name and profile image) for each unique user in chat history
-    const chatUsers = await usersCollections.find({
-      _id: { $in: uniqueUserIds.map(id => ObjectId(id)) }
-    }).project({ name: 1, profileImage: 1 }).toArray();
+    const chatUsers = await usersCollections
+      .find({
+        _id: { $in: uniqueUserIds.map((id) => ObjectId(id)) },
+      })
+      .project({ name: 1, profileImage: 1 })
+      .toArray();
 
     // Get the last message for each user
-    const chatUsersWithLastMessage = await Promise.all(chatUsers.map(async (chatUser) => {
-      const lastMessage = await messagesCollections.find({
-        $or: [
-          { senderId: ObjectId(user._id), receoientId: ObjectId(chatUser._id) },
-          { senderId: ObjectId(chatUser._id), receoientId: ObjectId(user._id) }
-        ]
-      }).sort({ timestamp: -1 }).limit(1).toArray();
+    const chatUsersWithLastMessage = await Promise.all(
+      chatUsers.map(async (chatUser) => {
+        const lastMessage = await messagesCollections
+          .find({
+            $or: [
+              {
+                senderId: ObjectId(user._id),
+                receoientId: ObjectId(chatUser._id),
+              },
+              {
+                senderId: ObjectId(chatUser._id),
+                receoientId: ObjectId(user._id),
+              },
+            ],
+          })
+          .sort({ timestamp: -1 })
+          .limit(1)
+          .toArray();
 
-      return {
-        ...chatUser,
-        lastMessage: lastMessage[0] ? lastMessage[0].messageText : null,
-        sender: lastMessage[0] ? (lastMessage[0].senderId.toString() === user._id.toString() ? 'You' : chatUser.name) : null,
-      };
-    }));
+        return {
+          ...chatUser,
+          lastMessage: lastMessage[0] ? lastMessage[0].messageText : null,
+          sender: lastMessage[0]
+            ? lastMessage[0].senderId.toString() === user._id.toString()
+              ? "You"
+              : chatUser.name
+            : null,
+        };
+      })
+    );
 
     res.send({ success: true, users: chatUsersWithLastMessage });
   } catch (error) {
@@ -1984,7 +2045,6 @@ app.get("/api/chat-users", async (req, res) => {
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
-
 
 app.get("/api/messages/:userId", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -1995,7 +2055,9 @@ app.get("/api/messages/:userId", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
 
     if (!currentUser) {
       return res.status(404).json({ error: "User not found." });
@@ -2007,14 +2069,49 @@ app.get("/api/messages/:userId", async (req, res) => {
     const messages = await messagesCollections
       .find({
         $or: [
-          { senderId: ObjectId(currentUser._id), receoientId: ObjectId(userId) },
-          { senderId: ObjectId(userId), receoientId: ObjectId(currentUser._id) }
-        ]
+          {
+            senderId: ObjectId(currentUser._id),
+            receoientId: ObjectId(userId),
+          },
+          {
+            senderId: ObjectId(userId),
+            receoientId: ObjectId(currentUser._id),
+          },
+        ],
       })
       .sort({ timestamp: 1 }) // Sort messages by timestamp
       .toArray();
 
     res.json({ success: true, messages });
+  } catch (error) {
+    console.error("Error fetching messages:", error);
+    res.status(500).json({ error: "Internal server error." });
+  }
+});
+
+app.get("/api/notifications/:userId", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { userId } = req.params;
+    console.log("userid", userId);
+    // Fetch chat messages where currentUser is either sender or receiver
+    const notifications = await notifyCollections.find({receoientId: new ObjectId(userId)}).toArray();
+
+    res.json({ success: true, notifications });
   } catch (error) {
     console.error("Error fetching messages:", error);
     res.status(500).json({ error: "Internal server error." });
@@ -2034,26 +2131,66 @@ const io = new Server(server, {
 });
 
 io.on("connection", (socket) => {
-  console.log("New client connected");
   // ইউজারকে রুমে যোগ করা
   socket.on("joinRoom", (userId) => {
-    const roomId = [userId].sort().join('-');
+    const roomId = [userId].sort().join("-");
     socket.join(roomId); // ইউজারকে রুমে যোগ করা
-    console.log('user join', roomId);
+    console.log("user join", roomId);
     socket.emit("connected");
   });
 
   socket.on("joinUser", (userId) => {
     const roomId = userId;
     socket.join(roomId); // ইউজারকে রুমে যোগ করা
+    console.log("user joined", roomId);
     socket.emit("connected");
   });
-  
+
+  socket.on("sendRequest", async (notificationData) => {
+    const {
+      senderId,
+      senderName,
+      receoientId,
+      notifyText,
+      senderProfile,
+      roomId,
+      type,
+    } = notificationData;
+    try {
+      const newNotifyReq = {
+        senderId: ObjectId(senderId),
+        receoientId: ObjectId(receoientId),
+        senderProfile,
+        senderName,
+        notifyText,
+        type,
+        timestamp: new Date(),
+      };
+      await notifyCollections.insertOne(newNotifyReq);
+      socket.to(roomId).emit("receiveNotify", {
+        senderId,
+        senderName,
+        senderProfile,
+        notifyText,
+        type,
+        timestamp: new Date(),
+      });
+    } catch (error) {
+      console.log(error);
+    }
+  });
 
   // মেসেজ পাঠানো
   socket.on("sendMessage", async (messageData) => {
-
-    const { senderId, senderName, receoientId, messageText, roomId, messageType, mediaUrl } = messageData;
+    const {
+      senderId,
+      senderName,
+      receoientId,
+      messageText,
+      roomId,
+      messageType,
+      mediaUrl,
+    } = messageData;
     try {
       // মেসেজ ডাটাবেসে সংরক্ষণ করা
       const newMessage = {
@@ -2065,8 +2202,7 @@ io.on("connection", (socket) => {
         timestamp: new Date(),
       };
 
-       
-     await messagesCollections.insertOne(newMessage);
+      await messagesCollections.insertOne(newMessage);
 
       // রিসিভেন্টের রুমে মেসেজ পাঠানো
       io.to(roomId).emit("receiveMessage", {
@@ -2077,14 +2213,13 @@ io.on("connection", (socket) => {
         timestamp: new Date(),
       });
 
-          // নোটিফিকেশন পাঠানো
-    socket.to(receoientId).emit("newNotification", {
-      senderName,
-      senderId,
-      messageText: messageText.substring(0, 30),
-      timestamp: new Date(),
-    });
-
+      // নোটিফিকেশন পাঠানো
+      socket.to(receoientId).emit("newNotification", {
+        senderName,
+        senderId,
+        messageText: messageText.substring(0, 30),
+        timestamp: new Date(),
+      });
     } catch (error) {
       console.error("Error sending message:", error);
     }
@@ -2095,16 +2230,8 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    console.log("A user disconnected:", socket.id); // ডিবাগিং
+    console.log("A user disconnected:", socket.id);
   });
 });
 
-
-
-
-
-
 // Start the serve
-
-
-
