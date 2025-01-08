@@ -54,6 +54,7 @@ const db = client.db("flybook");
 const usersCollections = db.collection("usersCollections");
 const opinionCollections = db.collection("opinionCollections");
 const adminPostCollections = db.collection("adminPostCollections");
+const adminThesisCollections = db.collection("adminThesisCollections");
 const bookCollections = db.collection("bookCollections");
 const onindoBookCollections = db.collection("onindoBookCollections");
 const bookTransCollections = db.collection("bookTransCollections");
@@ -440,6 +441,16 @@ app.get("/peoples", async (req, res) => {
   } catch (error) {
     console.error("Error fetching peoples:", error);
     res.status(401).json({ error: "Invalid or expired token." });
+  }
+});
+app.get("/thesis", async (req, res) => {
+  try {
+    // Exclude the logged-in user and exclude passwords
+    const result = await adminThesisCollections.find().toArray();
+
+    res.send(result);
+  } catch (error) {
+    console.error("Error fetching thesis:", error);
   }
 });
 
@@ -1773,6 +1784,26 @@ app.post("/admin/post", async (req, res) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const result = await adminPostCollections.insertOne(postData);
+    res.send({
+      success: true,
+      message: "posted successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("JWT Verification Error:", error);
+    res.status(401).json({ error: "Invalid or expired token." });
+  }
+});
+app.post("/admin/thesis", async (req, res) => {
+  const { postData } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const result = await adminThesisCollections.insertOne(postData);
     res.send({
       success: true,
       message: "posted successfully",
