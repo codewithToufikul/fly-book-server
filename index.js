@@ -147,6 +147,7 @@ app.post("/users/register", async (req, res) => {
       password: hashedPassword,
       verificationStatus: false,
       role: "user",
+      profileImage: "https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg",
     };
     const result = await usersCollections.insertOne(newUser);
 
@@ -1988,6 +1989,41 @@ app.delete("/api/delete-message/:messageId", async (req, res) => {
     res.status(500).json({ error: "Failed to delete the message." });
   }
 });
+app.delete("/api/delete-conversation/:messageId", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { messageId } = req.params;
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(404).json({ error: "User Not Found." });
+    }
+
+    // ডিলিট করার জন্য কোয়েরি
+    const result = await messagesCollections.deleteMany({
+      $or: [
+        { senderId: messageId, receoientId: user._id },
+        { senderId: user._id, receoientId: messageId },
+      ],
+    });
+    
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "No messages found to delete." });
+    }
+
+    res.send({
+      success: true,
+      message: "Conversation deleted successfully.",
+    });
+  } catch (error) {
+    console.error("Error deleting conversation:", error);
+    res.status(500).json({ error: "Failed to delete the conversation." });
+  }
+});
 
 app.get("/api/chat-users", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -2140,7 +2176,9 @@ app.get("/api/notifications/:userId", async (req, res) => {
     const { userId } = req.params;
     console.log("userid", userId);
     // Fetch chat messages where currentUser is either sender or receiver
-    const notifications = await notifyCollections.find({receoientId: new ObjectId(userId)}).toArray();
+    const notifications = await notifyCollections
+      .find({ receoientId: new ObjectId(userId) })
+      .toArray();
 
     res.json({ success: true, notifications });
   } catch (error) {
@@ -2155,7 +2193,7 @@ const server = app.listen(port, () => {
 
 const io = new Server(server, {
   cors: {
-    origin: "https://flybook-f23c5.web.app", // আপনার ফ্রন্টএন্ডের পোর্ট
+    origin: "https://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
     credentials: true, // Allow credentials if needed
   },
