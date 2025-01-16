@@ -2187,6 +2187,99 @@ app.get("/api/notifications/:userId", async (req, res) => {
   }
 });
 
+app.delete('/admin-post-delete/:postId', async(req, res)=>{
+  const {postId} = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({number: decoded.number})
+    if(user.role !== "admin"){
+      return res
+        .status(404)
+        .json({ success: false, message: "Unathorized access !" });
+    }
+    const result = await adminPostCollections.deleteOne({
+      _id: new ObjectId(postId),
+    });
+
+    if (result.deletedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "post not found." });
+    }
+
+    res.send({
+      success: true,
+      message: "post removed successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error while deleting user:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res
+      .status(500)
+      .json({ error: "An error occurred while deleting the book." });
+  }
+})
+
+app.put('/admin-post-edit/:postId', async (req, res) => {
+  const { postId } = req.params;
+  const { title, message } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Unauthorized access!" });
+    }
+
+    const updatedPost = await adminPostCollections.updateOne(
+      { _id: new ObjectId(postId) },
+      { $set: { title, message, updatedAt: new Date() } }
+    );
+
+    if (updatedPost.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Post not found." });
+    }
+
+    res.send({
+      success: true,
+      message: "Post updated successfully.",
+      data: updatedPost,
+    });
+  } catch (error) {
+    console.error("Error while updating post:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while updating the post." });
+  }
+});
+
+
+
 const server = app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
