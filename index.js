@@ -375,7 +375,7 @@ app.post("/forgot-password", async (req, res) => {
     from: "flybook24@gmail.com",
     to: email,
     subject: "Your FlyBook Reset Password Link",
-    text: `https://flybook-f23c5.web.app/reset_password/${user._id}/${token}`,
+    text: `https://flybook.com.bd/reset_password/${user._id}/${token}`,
   };
 
   transporter.sendMail(mailOptions, function (error, info) {
