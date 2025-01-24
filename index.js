@@ -87,46 +87,63 @@ app.get("/search", async (req, res) => {
     }
 
     const regex = new RegExp(searchQuery, "i"); // Case-insensitive search
+    let combinedResults = {};
 
-    // Fetch matching results from each collection with different queries
-    const users = await usersCollections
-      .find(
-        { name: regex },
-        { projection: { name: 1, email: 1, number: 1, profileImage: 1 } }
-      ) // শুধুমাত্র name এবং email আনবে
-      .toArray();
-    const opinionResults = await opinionCollections
-      .find({
-        $or: [
-          { $text: { $search: searchQuery } },
-          { userId: regex }, // Related to users
-        ],
-      })
-      .toArray();
-    const bookResults = await bookCollections
-      .find({
-        $or: [{ bookName: regex }, { owner: regex }],
-      })
-      .toArray();
-    const onindoBookResults = await onindoBookCollections
-      .find({
-        $or: [{ bookName: regex }, { owner: regex }],
-      })
-      .toArray();
-    // Combine regex and text search results if needed
-    const combinedResults = {
-      users,
-      opinions: opinionResults,
-      books: bookResults,
-      onindoBooks: onindoBookResults,
-    };
+    try {
+      const users = await usersCollections
+        .find(
+          { name: regex },
+          { projection: { name: 1, email: 1, number: 1, profileImage: 1 } }
+        )
+        .toArray();
+      combinedResults.users = users || [];
+    } catch (userError) {
+      console.error("Error fetching users:", userError);
+    }
+
+    try {
+      const opinionResults = await opinionCollections
+        .find({
+          $or: [
+            { $text: { $search: searchQuery } },
+            { userId: regex }, // Related to users
+          ],
+        })
+        .toArray();
+      combinedResults.opinions = opinionResults || [];
+    } catch (opinionError) {
+      console.error("Error fetching opinions:", opinionError);
+    }
+
+    try {
+      const bookResults = await bookCollections
+        .find({
+          $or: [{ bookName: regex }, { owner: regex }],
+        })
+        .toArray();
+      combinedResults.books = bookResults || [];
+    } catch (bookError) {
+      console.error("Error fetching books:", bookError);
+    }
+
+    try {
+      const onindoBookResults = await onindoBookCollections
+        .find({
+          $or: [{ bookName: regex }, { owner: regex }],
+        })
+        .toArray();
+      combinedResults.onindoBooks = onindoBookResults || [];
+    } catch (onindoBookError) {
+      console.error("Error fetching Onindo books:", onindoBookError);
+    }
 
     res.json(combinedResults);
   } catch (error) {
-    console.error("Error in search:", error);
+    console.error("Unexpected error in /search:", error);
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
+
 
 // User Registration Route
 app.post("/users/register", async (req, res) => {
