@@ -102,15 +102,15 @@ app.get("/search", async (req, res) => {
     }
 
     try {
-      const opinionResults = await opinionCollections
-        .find({
-          $or: [
-            { $text: { $search: searchQuery } },
-            { userId: regex }, // Related to users
-          ],
-        })
-        .toArray();
-      combinedResults.opinions = opinionResults || [];
+      const textSearchResults = await opinionCollections
+      .find({ $text: { $search: searchQuery } })
+      .toArray();
+  
+    const regexSearchResults = await opinionCollections
+      .find({ userName: regex })
+      .toArray();
+  
+    combinedResults.opinions = [...textSearchResults, ...regexSearchResults];
     } catch (opinionError) {
       console.error("Error fetching opinions:", opinionError);
     }
