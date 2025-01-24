@@ -88,26 +88,48 @@ app.get("/search", async (req, res) => {
 
     const regex = new RegExp(searchQuery, "i"); // Case-insensitive search
 
-    // Fetch matching results from each collection with different queries
+    // Step 1: Fetch matching users
     const users = await usersCollections
       .find(
         { name: regex },
-        { projection: { name: 1, email: 1, number: 1, profileImage: 1 } }
-      ) // শুধুমাত্র name এবং email আনবে
+        { projection: { _id: 1, name: 1, email: 1, number: 1, profileImage: 1 } }
+      )
       .toArray();
+
+    // Extract user IDs for related searches
+    const userIds = users.map((user) => user._id.toString());
+
+    // Step 2: Fetch related opinions, books, and onindoBooks
     const opinionResults = await opinionCollections
       .find({
-        $text: { $search: searchQuery },
-        userName: regex
+        $or: [
+          { $text: { $search: searchQuery } },
+          { userId: { $in: userIds } }, // Related to users
+        ],
       })
       .toArray();
+
     const bookResults = await bookCollections
-      .find({ bookName: regex, owner: regex })
+      .find({
+        $or: [
+          { bookName: regex },
+          { owner: regex },
+          { ownerId: { $in: userIds } }, // Related to users
+        ],
+      })
       .toArray();
+
     const onindoBookResults = await onindoBookCollections
-      .find({ bookName: regex, owner: regex })
+      .find({
+        $or: [
+          { bookName: regex },
+          { owner: regex },
+          { ownerId: { $in: userIds } }, // Related to users
+        ],
+      })
       .toArray();
-    // Combine regex and text search results if needed
+
+    // Step 3: Combine results
     const combinedResults = {
       users,
       opinions: opinionResults,
@@ -121,6 +143,7 @@ app.get("/search", async (req, res) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
+
 
 // User Registration Route
 app.post("/users/register", async (req, res) => {
