@@ -88,48 +88,32 @@ app.get("/search", async (req, res) => {
 
     const regex = new RegExp(searchQuery, "i"); // Case-insensitive search
 
-    // Step 1: Fetch matching users
+    // Fetch matching results from each collection with different queries
     const users = await usersCollections
       .find(
         { name: regex },
-        { projection: { _id: 1, name: 1, email: 1, number: 1, profileImage: 1 } }
-      )
+        { projection: { name: 1, email: 1, number: 1, profileImage: 1 } }
+      ) // শুধুমাত্র name এবং email আনবে
       .toArray();
-
-    // Extract user IDs for related searches
-    const userIds = users.map((user) => user._id.toString());
-
-    // Step 2: Fetch related opinions, books, and onindoBooks
     const opinionResults = await opinionCollections
       .find({
         $or: [
           { $text: { $search: searchQuery } },
-          { userId: { $in: userIds } }, // Related to users
+          { userId: regex }, // Related to users
         ],
       })
       .toArray();
-
     const bookResults = await bookCollections
       .find({
-        $or: [
-          { bookName: regex },
-          { owner: regex },
-          { ownerId: { $in: userIds } }, // Related to users
-        ],
+        $or: [{ bookName: regex }, { owner: regex }],
       })
       .toArray();
-
     const onindoBookResults = await onindoBookCollections
       .find({
-        $or: [
-          { bookName: regex },
-          { owner: regex },
-          { ownerId: { $in: userIds } }, // Related to users
-        ],
+        $or: [{ bookName: regex }, { owner: regex }],
       })
       .toArray();
-
-    // Step 3: Combine results
+    // Combine regex and text search results if needed
     const combinedResults = {
       users,
       opinions: opinionResults,
@@ -143,7 +127,6 @@ app.get("/search", async (req, res) => {
     res.status(500).json({ message: "Internal Server Error" });
   }
 });
-
 
 // User Registration Route
 app.post("/users/register", async (req, res) => {
@@ -170,7 +153,8 @@ app.post("/users/register", async (req, res) => {
       password: hashedPassword,
       verificationStatus: false,
       role: "user",
-      profileImage: "https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg",
+      profileImage:
+        "https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg",
     };
     const result = await usersCollections.insertOne(newUser);
 
@@ -2033,7 +2017,7 @@ app.delete("/api/delete-conversation/:messageId", async (req, res) => {
         { senderId: user._id, receoientId: messageId },
       ],
     });
-    
+
     if (result.deletedCount === 0) {
       return res.status(404).json({ error: "No messages found to delete." });
     }
@@ -2210,19 +2194,18 @@ app.get("/api/notifications/:userId", async (req, res) => {
   }
 });
 
-app.delete('/admin-post-delete/:postId', async(req, res)=>{
-  const {postId} = req.params;
+app.delete("/admin-post-delete/:postId", async (req, res) => {
+  const { postId } = req.params;
   const token = req.headers.authorization?.split(" ")[1];
 
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
-  
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await usersCollections.findOne({number: decoded.number})
-    if(user.role !== "admin"){
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (user.role !== "admin") {
       return res
         .status(404)
         .json({ success: false, message: "Unathorized access !" });
@@ -2253,9 +2236,9 @@ app.delete('/admin-post-delete/:postId', async(req, res)=>{
       .status(500)
       .json({ error: "An error occurred while deleting the book." });
   }
-})
+});
 
-app.put('/admin-post-edit/:postId', async (req, res) => {
+app.put("/admin-post-edit/:postId", async (req, res) => {
   const { postId } = req.params;
   const { title, message } = req.body;
   const token = req.headers.authorization?.split(" ")[1];
@@ -2297,11 +2280,11 @@ app.put('/admin-post-edit/:postId', async (req, res) => {
       return res.status(401).json({ error: "Invalid or expired token." });
     }
 
-    res.status(500).json({ error: "An error occurred while updating the post." });
+    res
+      .status(500)
+      .json({ error: "An error occurred while updating the post." });
   }
 });
-
-
 
 const server = app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
