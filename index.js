@@ -98,15 +98,15 @@ app.get("/search", async (req, res) => {
     const opinionResults = await opinionCollections
       .find({
         $text: { $search: searchQuery },
+        userName: regex
       })
       .toArray();
     const bookResults = await bookCollections
-      .find({ bookName: regex })
+      .find({ bookName: regex, owner: regex })
       .toArray();
     const onindoBookResults = await onindoBookCollections
-      .find({ bookName: regex })
+      .find({ bookName: regex, owner: regex })
       .toArray();
-
     // Combine regex and text search results if needed
     const combinedResults = {
       users,
