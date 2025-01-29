@@ -148,7 +148,7 @@ app.get("/search", async (req, res) => {
 // User Registration Route
 app.post("/users/register", async (req, res) => {
   try {
-    const { name, email, number, password } = req.body;
+    const { name, email, number, password, userLocation } = req.body;
 
     // Check if user already exists
     const existingUser = await usersCollections.findOne({ number });
@@ -169,6 +169,7 @@ app.post("/users/register", async (req, res) => {
       number,
       password: hashedPassword,
       verificationStatus: false,
+      userLocation,
       role: "user",
       profileImage:
         "https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg",
@@ -368,6 +369,36 @@ app.put("/profile/updateDetails", async (req, res) => {
     const updatedUser = await usersCollections.updateOne(
       { number: decoded.number },
       { $set: { work, studies, currentCity, hometown, email } }
+    );
+
+    res.json({ message: "Profile updated successfully" });
+  } catch (error) {
+    console.error("Error updating profile details:", error);
+    res.status(500).json({ error: "Failed to update profile details." });
+  }
+});
+
+app.put("/profile/updateDetails/location", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { userLocation } = req.body;
+
+    const updatedUser = await usersCollections.updateOne(
+      { number: decoded.number },
+      { $set: { userLocation } }
     );
 
     res.json({ message: "Profile updated successfully" });
