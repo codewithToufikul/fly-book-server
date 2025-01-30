@@ -73,6 +73,15 @@ const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
     console.error("Error creating text index:", error);
   }
 })();
+(async () => {
+  try {
+    await connectToMongo();
+    await usersCollections.createIndex({ "userLocation": "2dsphere" });
+    console.log("location index created successfully!");
+  } catch (error) {
+    console.error("Error creating location index:", error);
+  }
+})();
 
 // Route to check API status
 app.get("/", (req, res) => {
@@ -169,7 +178,13 @@ app.post("/users/register", async (req, res) => {
       number,
       password: hashedPassword,
       verificationStatus: false,
-      userLocation,
+      userLocation: {
+        type: "Point",
+        coordinates: [
+          parseFloat(userLocation.longitude),
+          parseFloat(userLocation.latitude),
+        ]
+      },
       role: "user",
       profileImage:
         "https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg",
@@ -378,6 +393,49 @@ app.put("/profile/updateDetails", async (req, res) => {
   }
 });
 
+
+app.get("/users/nearby", async (req, res) => {
+  const { longitude, latitude, maxDistance = 300 } = req.query;
+  
+  try {
+    const nearbyUsers = await usersCollections
+      .aggregate([
+        {
+          $geoNear: {
+            near: {
+              type: "Point",
+              coordinates: [parseFloat(longitude), parseFloat(latitude)],
+            },
+            distanceField: "distance",
+            maxDistance: parseFloat(maxDistance),
+            spherical: true,
+          },
+        },
+        {
+          $project: {
+            _id: 1,          // _id ফিল্ড শো করবে
+            name: 1,         // নাম ফিল্ড
+            profileImage: 1, // প্রোফাইল ইমেজ
+            // অন্যান্য ফিল্ড অটোমেটিকালি এক্সক্লুড হবে
+          }
+        }
+      ])
+      .toArray();
+
+    res.send({ 
+      success: true, 
+      data: nearbyUsers 
+    });
+    
+  } catch (error) {
+    console.error("Error fetching nearby users:", error);
+    res.status(500).send({
+      success: false,
+      message: "An unexpected error occurred.",
+    });
+  }
+});
+
 app.put("/profile/updateDetails/location", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
@@ -398,7 +456,14 @@ app.put("/profile/updateDetails/location", async (req, res) => {
 
     const updatedUser = await usersCollections.updateOne(
       { number: decoded.number },
-      { $set: { userLocation } }
+      { $set: {       userLocation: {
+        type: "Point",
+        coordinates: [
+          parseFloat(userLocation.longitude),
+          parseFloat(userLocation.latitude),
+        ]
+      },
+ } }
     );
 
     res.json({ message: "Profile updated successfully" });
@@ -782,15 +847,18 @@ app.get("/all-friends", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
 
+    // Check if friends array exists, otherwise use empty array
+    const friendsIds = user.friends || [];
+    
     const friends = await usersCollections
       .find({
-        _id: { $in: user.friends },
+        _id: { $in: friendsIds }
       })
       .toArray();
 
     res.send(friends);
   } catch (error) {
-    console.error("Error fetching peoples:", error);
+    console.error("Error fetching friends:", error);
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
