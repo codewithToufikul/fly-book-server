@@ -2408,7 +2408,7 @@ const server = app.listen(port, () => {
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:5173", // আপনার ফ্রন্টএন্ডের পোর্ট
+    origin: "https://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
     credentials: true, // Allow credentials if needed
   },
