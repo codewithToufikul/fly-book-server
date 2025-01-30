@@ -426,7 +426,7 @@ app.get("/users/nearby", async (req, res) => {
       success: true, 
       data: nearbyUsers 
     });
-    
+    console.log(nearbyUsers);
   } catch (error) {
     console.error("Error fetching nearby users:", error);
     res.status(500).send({
@@ -2408,7 +2408,7 @@ const server = app.listen(port, () => {
 
 const io = new Server(server, {
   cors: {
-    origin: "https://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
+    origin: "http://localhost:5173", // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
     credentials: true, // Allow credentials if needed
   },
