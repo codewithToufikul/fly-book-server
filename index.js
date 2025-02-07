@@ -395,7 +395,7 @@ app.put("/profile/updateDetails", async (req, res) => {
 
 
 app.get("/users/nearby", async (req, res) => {
-  const { longitude, latitude, maxDistance = 300 } = req.query;
+  const { longitude, latitude, maxDistance = 4000 } = req.query;
   
   try {
     const nearbyUsers = await usersCollections
