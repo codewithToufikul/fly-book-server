@@ -3,6 +3,11 @@ const cors = require("cors");
 const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
+const multer = require("multer");
+const { v2: cloudinary } = require("cloudinary");
+const { CloudinaryStorage } = require("multer-storage-cloudinary");
+const axios = require("axios");
+const pdfParse = require("pdf-parse");
 require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const http = require("http");
@@ -39,6 +44,36 @@ async function connectToMongo() {
   }
 }
 
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
+
+const storage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    return {
+      folder: "pdfBooks",
+      resource_type: file.mimetype === "application/pdf" ? "raw" : "image",
+      format: file.mimetype === "application/pdf" ? "pdf" : undefined,
+      public_id: file.originalname.replace(/\.[^/.]+$/, ""),
+    };
+  },
+});
+
+const upload = multer({ storage: storage });
+
+const getPdfPageCount = async (pdfUrl) => {
+  try {
+    const response = await axios.get(pdfUrl, { responseType: "arraybuffer" });
+    const data = await pdfParse(response.data);
+    return data.numpages;
+  } catch (error) {
+    return null;
+  }
+};
+
 // Middleware to connect to MongoDB before every route
 app.use(async (req, res, next) => {
   try {
@@ -60,6 +95,7 @@ const onindoBookCollections = db.collection("onindoBookCollections");
 const bookTransCollections = db.collection("bookTransCollections");
 const messagesCollections = db.collection("messagesCollections");
 const notifyCollections = db.collection("notifyCollections");
+const pdfCollections = db.collection("pdfCollections");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
 // Create text index on opinions collection when the server starts
 (async () => {
@@ -76,7 +112,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
 (async () => {
   try {
     await connectToMongo();
-    await usersCollections.createIndex({ "userLocation": "2dsphere" });
+    await usersCollections.createIndex({ userLocation: "2dsphere" });
     console.log("location index created successfully!");
   } catch (error) {
     console.error("Error creating location index:", error);
@@ -112,14 +148,14 @@ app.get("/search", async (req, res) => {
 
     try {
       const textSearchResults = await opinionCollections
-      .find({ $text: { $search: searchQuery } })
-      .toArray();
-  
-    const regexSearchResults = await opinionCollections
-      .find({ userName: regex })
-      .toArray();
-  
-    combinedResults.opinions = [...textSearchResults, ...regexSearchResults];
+        .find({ $text: { $search: searchQuery } })
+        .toArray();
+
+      const regexSearchResults = await opinionCollections
+        .find({ userName: regex })
+        .toArray();
+
+      combinedResults.opinions = [...textSearchResults, ...regexSearchResults];
     } catch (opinionError) {
       console.error("Error fetching opinions:", opinionError);
     }
@@ -153,7 +189,6 @@ app.get("/search", async (req, res) => {
   }
 });
 
-
 // User Registration Route
 app.post("/users/register", async (req, res) => {
   try {
@@ -183,7 +218,7 @@ app.post("/users/register", async (req, res) => {
         coordinates: [
           parseFloat(userLocation.longitude),
           parseFloat(userLocation.latitude),
-        ]
+        ],
       },
       role: "user",
       profileImage:
@@ -271,6 +306,82 @@ app.get("/profile", async (req, res) => {
   } catch (error) {
     console.error("JWT Verification Error:", error);
     res.status(401).json({ error: "Invalid or expired token." });
+  }
+});
+
+app.post(
+  "/upload",
+  upload.fields([{ name: "pdfFile" }, { name: "coverPhoto" }]),
+  async (req, res) => {
+    try {
+      const {
+        bookName,
+        writerName,
+        pdfLink,
+        description,
+        uploadMethod,
+        category,
+      } = req.body;
+      let pdfUrl,
+        fileSize,
+        pageCount = null;
+
+      if (req.files["pdfFile"]) {
+        const pdfFile = req.files["pdfFile"][0];
+        pdfUrl = pdfFile.path;
+        fileSize = pdfFile.size;
+        pageCount = await getPdfPageCount(pdfUrl);
+      } else {
+        pdfUrl = pdfLink;
+        pageCount = await getPdfPageCount(pdfLink);
+      }
+
+      const coverPhoto = req.files["coverPhoto"]
+        ? req.files["coverPhoto"][0].path
+        : null;
+
+      const newBook = {
+        bookName,
+        writerName,
+        category,
+        uploadMethod,
+        pdfUrl,
+        coverUrl: coverPhoto,
+        fileSize, // Store file size
+        pageCount, // Store number of pages
+        description,
+        timestamp: new Date(),
+      };
+
+      await pdfCollections.insertOne(newBook);
+      res
+        .status(201)
+        .json({ message: "PDF Book Uploaded Successfully", book: newBook });
+    } catch (error) {
+      res.status(500).json({ message: "Server Error", error });
+    }
+  }
+);
+
+app.get("/pdf-books", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const books = await pdfCollections.find().toArray();
+    res.status(200).json(books);
+  } catch (error) {
+    res.status(500).json({ message: "Server Error", error });
   }
 });
 
@@ -393,10 +504,9 @@ app.put("/profile/updateDetails", async (req, res) => {
   }
 });
 
-
 app.get("/users/nearby", async (req, res) => {
   const { longitude, latitude, maxDistance = 4000 } = req.query;
-  
+
   try {
     const nearbyUsers = await usersCollections
       .aggregate([
@@ -413,18 +523,18 @@ app.get("/users/nearby", async (req, res) => {
         },
         {
           $project: {
-            _id: 1,          // _id ফিল্ড শো করবে
-            name: 1,         // নাম ফিল্ড
+            _id: 1, // _id ফিল্ড শো করবে
+            name: 1, // নাম ফিল্ড
             profileImage: 1, // প্রোফাইল ইমেজ
             // অন্যান্য ফিল্ড অটোমেটিকালি এক্সক্লুড হবে
-          }
-        }
+          },
+        },
       ])
       .toArray();
 
-    res.send({ 
-      success: true, 
-      data: nearbyUsers 
+    res.send({
+      success: true,
+      data: nearbyUsers,
     });
     console.log(nearbyUsers);
   } catch (error) {
@@ -456,14 +566,17 @@ app.put("/profile/updateDetails/location", async (req, res) => {
 
     const updatedUser = await usersCollections.updateOne(
       { number: decoded.number },
-      { $set: {       userLocation: {
-        type: "Point",
-        coordinates: [
-          parseFloat(userLocation.longitude),
-          parseFloat(userLocation.latitude),
-        ]
-      },
- } }
+      {
+        $set: {
+          userLocation: {
+            type: "Point",
+            coordinates: [
+              parseFloat(userLocation.longitude),
+              parseFloat(userLocation.latitude),
+            ],
+          },
+        },
+      }
     );
 
     res.json({ message: "Profile updated successfully" });
@@ -849,10 +962,10 @@ app.get("/all-friends", async (req, res) => {
 
     // Check if friends array exists, otherwise use empty array
     const friendsIds = user.friends || [];
-    
+
     const friends = await usersCollections
       .find({
-        _id: { $in: friendsIds }
+        _id: { $in: friendsIds },
       })
       .toArray();
 
