@@ -95,7 +95,7 @@ const onindoBookCollections = db.collection("onindoBookCollections");
 const bookTransCollections = db.collection("bookTransCollections");
 const messagesCollections = db.collection("messagesCollections");
 const notifyCollections = db.collection("notifyCollections");
-const pdfCollections = db.collection("pdfCollections");
+const homeCategoryCollection = db.collection("homeCategoryCollection");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
 // Create text index on opinions collection when the server starts
 (async () => {
@@ -2502,6 +2502,70 @@ app.put("/admin-post-edit/:postId", async (req, res) => {
   }
 });
 
+app.post("/admin/category-add", async (req, res) => {
+  const { category } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Unauthorized access!" });
+    }
+    const categoryItem = {
+      category,
+    };
+    await homeCategoryCollection.insertOne(categoryItem);
+
+    res.send({
+      success: true,
+      message: "category added successfully.",
+    });
+  } catch (error) {
+    console.error("Error while adding category:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while adding category" });
+  }
+});
+
+app.get("/home-category", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Unauthorized access!" });
+    }
+    const categories = await homeCategoryCollection.find().toArray();
+    res.json({ success: true, categories });
+  } catch (error) {
+    console.error("Error while getting category:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while getting category" });
+  }
+});
+
 const server = app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
@@ -2518,7 +2582,8 @@ io.on("connection", (socket) => {
   // ইউজারকে রুমে যোগ করা
   socket.on("joinRoom", (userId) => {
     const roomId = [userId].sort().join("-");
-    socket.join(roomId); // ইউজারকে রুমে যোগ করা
+    socket.join(roomId);
+    y789iy;
     console.log("user join", roomId);
     socket.emit("connected");
   });
