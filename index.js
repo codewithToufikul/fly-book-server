@@ -94,6 +94,7 @@ const bookCollections = db.collection("bookCollections");
 const onindoBookCollections = db.collection("onindoBookCollections");
 const bookTransCollections = db.collection("bookTransCollections");
 const messagesCollections = db.collection("messagesCollections");
+const pdfCollections = db.collection("pdfCollections");
 const notifyCollections = db.collection("notifyCollections");
 const homeCategoryCollection = db.collection("homeCategoryCollection");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
@@ -2454,6 +2455,84 @@ app.delete("/admin-post-delete/:postId", async (req, res) => {
   }
 });
 
+app.delete("/admin/category-delete/:categoryId", async (req, res) => {
+  const { categoryId } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Unauthorized access!" });
+    }
+
+    const result = await homeCategoryCollection.deleteOne({
+      _id: new ObjectId(categoryId)
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: "Category not found." });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Category deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("Error while deleting category:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.put("/admin/category-update/:categoryId", async (req, res) => {
+  const { categoryId } = req.params;
+  const { category } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Unauthorized access!" });
+    }
+
+    const result = await homeCategoryCollection.updateOne(
+      { _id: new ObjectId(categoryId) },
+      { $set: { category } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Category not found." });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Category updated successfully"
+    });
+
+  } catch (error) {
+    console.error("Error while updating category:", error);
+    
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
 app.put("/admin-post-edit/:postId", async (req, res) => {
   const { postId } = req.params;
   const { title, message } = req.body;
@@ -2572,7 +2651,7 @@ const server = app.listen(port, () => {
 
 const io = new Server(server, {
   cors: {
-    origin: "https://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
+    origin: "http://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
     credentials: true, // Allow credentials if needed
   },
