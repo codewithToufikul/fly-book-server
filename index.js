@@ -2618,21 +2618,15 @@ app.post("/admin/category-add", async (req, res) => {
 });
 
 app.get("/home-category", async (req, res) => {
-
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
     const categories = await homeCategoryCollection.find().toArray();
     res.json({ success: true, categories });
   } catch (error) {
     console.error("Error while getting category:", error);
-
-    if (error.name === "JsonWebTokenError") {
-      return res.status(401).json({ error: "Invalid or expired token." });
-    }
-
     res.status(500).json({ error: "An error occurred while getting category" });
   }
 });
+
 
 app.put("/pdf-books/:id", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
