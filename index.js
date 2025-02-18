@@ -2645,6 +2645,101 @@ app.get("/home-category", async (req, res) => {
   }
 });
 
+app.put("/pdf-books/:id", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { id } = req.params;
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Unauthorized access!" });
+    }
+
+    const { bookName, writerName, category, pdfUrl, coverUrl, description } = req.body;
+
+    const updatedBook = await pdfCollections.findOneAndUpdate(
+      { _id: new ObjectId(id) },
+      {
+        $set: {
+          bookName,
+          writerName, 
+          category,
+          pdfUrl,
+          coverUrl,
+          description,
+          updatedAt: new Date()
+        }
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!updatedBook.value) {
+      return res.status(404).json({ success: false, message: "Book not found" });
+    }
+
+    res.json({ 
+      success: true, 
+      message: "Book updated successfully",
+      book: updatedBook.value
+    });
+
+  } catch (error) {
+    console.error("Error updating book:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while updating the book" });
+  }
+});
+
+app.delete("/pdf-books/:id", async (req, res) => {
+  const { id } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (user.role !== "admin") {
+      return res
+        .status(403)
+        .json({ success: false, message: "Unauthorized access!" });
+    }
+
+    const result = await pdfCollections.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: "Book not found" });
+    }
+
+    res.json({ success: true, message: "Book deleted successfully" });
+
+  } catch (error) {
+    console.error("Error deleting book:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while deleting the book" });
+  }
+});
+
+
 const server = app.listen(port, () => {
   console.log(`Server running at http://localhost:${port}`);
 });
