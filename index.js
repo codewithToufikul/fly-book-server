@@ -2618,20 +2618,9 @@ app.post("/admin/category-add", async (req, res) => {
 });
 
 app.get("/home-category", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
 
-  if (!token) {
-    return res.status(401).json({ error: "Access denied. No token provided." });
-  }
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await usersCollections.findOne({ number: decoded.number });
-
-    if (!user) {
-      return res
-        .status(403)
-        .json({ success: false, message: "Unauthorized access!" });
-    }
     const categories = await homeCategoryCollection.find().toArray();
     res.json({ success: true, categories });
   } catch (error) {
