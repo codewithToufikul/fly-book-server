@@ -2724,14 +2724,14 @@ app.delete("/pdf-books/:id", async (req, res) => {
 
 
 const server = app.listen(port, () => {
-  console.log(`Server running at http://localhost:${port}`);
+  console.log(`Server running http://localhost:${port}`);
 });
 
 const io = new Server(server, {
   cors: {
     origin: "http://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
-    credentials: true, // Allow credentials if needed
+    credentials: true, 
   },
 });
 
