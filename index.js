@@ -96,6 +96,7 @@ const bookTransCollections = db.collection("bookTransCollections");
 const messagesCollections = db.collection("messagesCollections");
 const pdfCollections = db.collection("pdfCollections");
 const notifyCollections = db.collection("notifyCollections");
+const noteCollections = db.collection("noteCollections");
 const homeCategoryCollection = db.collection("homeCategoryCollection");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
 // Create text index on opinions collection when the server starts
@@ -181,6 +182,23 @@ app.get("/search", async (req, res) => {
       combinedResults.onindoBooks = onindoBookResults || [];
     } catch (onindoBookError) {
       console.error("Error fetching Onindo books:", onindoBookError);
+    }
+
+    // Add PDF books search
+    try {
+      const pdfBookResults = await pdfCollections
+        .find({
+          $or: [
+            { bookName: regex },
+            { writerName: regex },
+            { description: regex },
+            { category: regex }
+          ]
+        })
+        .toArray();
+      combinedResults.pdfBooks = pdfBookResults || [];
+    } catch (pdfError) {
+      console.error("Error fetching PDF books:", pdfError);
     }
 
     res.json(combinedResults);
@@ -455,7 +473,7 @@ app.put("/profile/verification", async (req, res) => {
       { $set: { verificationStatus } }
     );
 
-    res.json({ message: "Verification status updated successfully" });
+    res.json({ message: "Verification status updated successfully" })
   } catch (error) {
     console.error("Error updating verification status:", error);
     res.status(500).json({ error: "Failed to update verification status." });
@@ -2257,7 +2275,6 @@ app.get("/api/chat-users", async (req, res) => {
   }
 
   try {
-    // Verify the JWT token and extract the user number
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await usersCollections.findOne({ number: decoded.number });
 
@@ -2265,75 +2282,95 @@ app.get("/api/chat-users", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
 
-    // Fetch chat history: Messages where the user is either the sender or receiver
+    // Fetch chat history with proper ObjectId conversion and null checks
     const chats = await messagesCollections
       .find({
         $or: [
-          { senderId: ObjectId(user._id) },
-          { receoientId: ObjectId(user._id) },
+          { senderId: new ObjectId(user._id) },
+          { receoientId: new ObjectId(user._id) },
         ],
       })
       .toArray();
 
-    if (chats.length === 0) {
-      return res.status(404).json({ error: "No chat history found." });
+    // If no chats found, return empty array instead of 404
+    if (!chats || chats.length === 0) {
+      return res.json({ success: true, users: [] });
     }
 
-    // Extract unique user IDs from chat history
-    const uniqueUserIds = [
-      ...new Set(
-        chats.map((msg) =>
-          msg.senderId.toString() === user._id.toString()
-            ? msg.receoientId.toString()
-            : msg.senderId.toString()
-        )
-      ),
-    ];
+    // Safely extract unique user IDs with null checks
+    const uniqueUserIds = [...new Set(
+      chats.reduce((ids, msg) => {
+        if (msg.senderId && msg.receoientId) {
+          const senderId = msg.senderId.toString();
+          const receoientId = msg.receoientId.toString();
+          const userId = senderId === user._id.toString() ? receoientId : senderId;
+          if (userId) ids.push(userId);
+        }
+        return ids;
+      }, [])
+    )];
 
-    // Fetch user details (name and profile image) for each unique user in chat history
+    // Fetch user details for valid IDs
     const chatUsers = await usersCollections
       .find({
-        _id: { $in: uniqueUserIds.map((id) => ObjectId(id)) },
+        _id: { 
+          $in: uniqueUserIds.map(id => {
+            try {
+              return new ObjectId(id);
+            } catch (e) {
+              return null;
+            }
+          }).filter(id => id !== null)
+        }
       })
       .project({ name: 1, profileImage: 1 })
       .toArray();
 
-    // Get the last message for each user
+    // Get last message for each user with error handling
     const chatUsersWithLastMessage = await Promise.all(
       chatUsers.map(async (chatUser) => {
-        const lastMessage = await messagesCollections
-          .find({
-            $or: [
-              {
-                senderId: ObjectId(user._id),
-                receoientId: ObjectId(chatUser._id),
-              },
-              {
-                senderId: ObjectId(chatUser._id),
-                receoientId: ObjectId(user._id),
-              },
-            ],
-          })
-          .sort({ timestamp: -1 })
-          .limit(1)
-          .toArray();
+        try {
+          const lastMessage = await messagesCollections
+            .find({
+              $or: [
+                {
+                  senderId: new ObjectId(user._id),
+                  receoientId: new ObjectId(chatUser._id),
+                },
+                {
+                  senderId: new ObjectId(chatUser._id),
+                  receoientId: new ObjectId(user._id),
+                },
+              ],
+            })
+            .sort({ timestamp: -1 })
+            .limit(1)
+            .toArray();
 
-        return {
-          ...chatUser,
-          lastMessage: lastMessage[0] ? lastMessage[0].messageText : null,
-          sender: lastMessage[0]
-            ? lastMessage[0].senderId.toString() === user._id.toString()
-              ? "You"
-              : chatUser.name
-            : null,
-        };
+          return {
+            ...chatUser,
+            lastMessage: lastMessage[0]?.messageText || null,
+            sender: lastMessage[0]
+              ? lastMessage[0].senderId.toString() === user._id.toString()
+                ? "You"
+                : chatUser.name
+              : null,
+          };
+        } catch (error) {
+          console.error(`Error processing chat user ${chatUser._id}:`, error);
+          return {
+            ...chatUser,
+            lastMessage: null,
+            sender: null,
+          };
+        }
       })
     );
 
-    res.send({ success: true, users: chatUsersWithLastMessage });
+    res.json({ success: true, users: chatUsersWithLastMessage });
   } catch (error) {
     console.error("Error fetching chat users:", error);
-    res.status(401).json({ error: "Invalid or expired token." });
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -2723,13 +2760,140 @@ app.delete("/pdf-books/:id", async (req, res) => {
 });
 
 
+app.post("/notes/add", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { content } = req.body;
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const newNote = {
+      userId: user._id,
+      content: content,
+      createdAt: new Date()
+    };
+
+    const result = await noteCollections.insertOne(newNote);
+
+    if (!result.insertedId) {
+      return res.status(500).json({ success: false, error: "Failed to add note" });
+    }
+
+    res.status(200).json({
+      success: true,
+      note: {
+        _id: result.insertedId,
+        ...newNote
+      }
+    });
+
+  } catch (error) {
+    console.error("Error adding note:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while adding the note" });
+  }
+});
+
+app.get("/notes", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const notes = await noteCollections
+      .find({ userId: user._id })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      notes: notes
+    });
+
+  } catch (error) {
+    console.error("Error fetching notes:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while fetching notes" });
+  }
+});
+
+app.delete("/notes/:noteId", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { noteId } = req.params;
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const result = await noteCollections.deleteOne({
+      _id: new ObjectId(noteId),
+      userId: user._id
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Note not found or access denied." });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Note deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("Error deleting note:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while deleting the note" });
+  }
+});
+
+
+
+
 const server = app.listen(port, () => {
   console.log(`Server running http://localhost:${port}`);
 });
 
 const io = new Server(server, {
   cors: {
-    origin: "http://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
+    origin: "http://160.191.129.28:5000", // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
     credentials: true, 
   },
@@ -2740,7 +2904,6 @@ io.on("connection", (socket) => {
   socket.on("joinRoom", (userId) => {
     const roomId = [userId].sort().join("-");
     socket.join(roomId);
-    y789iy;
     console.log("user join", roomId);
     socket.emit("connected");
   });
