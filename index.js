@@ -2893,7 +2893,7 @@ const server = app.listen(port, () => {
 
 const io = new Server(server, {
   cors: {
-    origin: "http://160.191.129.28:5000", // আপনার ফ্রন্টএন্ডের পোর্ট
+    origin: "https://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
     credentials: true, 
   },
