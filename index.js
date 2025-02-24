@@ -2060,13 +2060,30 @@ app.post("/admin/thesis", async (req, res) => {
 
 app.get("/all-home-books", async (req, res) => {
   try {
-    const post = await adminPostCollections.find().toArray();
-
+    const { category } = req.query;
+    let query = {};
+    
+    if (category && category !== "All") {
+      query.category = category;
+    }
+    
+    const post = await adminPostCollections.find(query).toArray();
     res.send(post);
   } catch (error) {
-    console.error("Error fetching peoples:", error);
+    console.error("Error fetching posts:", error);
+    res.status(500).json({ error: error.message });
   }
 });
+
+// app.get("/all-home-books", async (req, res) => {
+//   try {
+//     const post = await adminPostCollections.find().toArray();
+
+//     res.send(post);
+//   } catch (error) {
+//     console.error("Error fetching peoples:", error);
+//   }
+// });
 
 app.post("/admin-post/like", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -2245,11 +2262,14 @@ app.delete("/api/delete-conversation/:messageId", async (req, res) => {
       return res.status(404).json({ error: "User Not Found." });
     }
 
-    // ডিলিট করার জন্য কোয়েরি
+    // Convert messageId to ObjectId
+    const targetUserId = new ObjectId(messageId);
+
+    // Delete conversation query with proper ObjectId conversion
     const result = await messagesCollections.deleteMany({
       $or: [
-        { senderId: messageId, receoientId: user._id },
-        { senderId: user._id, receoientId: messageId },
+        { senderId: targetUserId, receoientId: user._id },
+        { senderId: user._id, receoientId: targetUserId },
       ],
     });
 
@@ -2263,9 +2283,14 @@ app.delete("/api/delete-conversation/:messageId", async (req, res) => {
     });
   } catch (error) {
     console.error("Error deleting conversation:", error);
+    if (error.name === "BSONTypeError") {
+      return res.status(400).json({ error: "Invalid message ID format" });
+    }
     res.status(500).json({ error: "Failed to delete the conversation." });
   }
 });
+
+
 
 app.get("/api/chat-users", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -2893,7 +2918,7 @@ const server = app.listen(port, () => {
 
 const io = new Server(server, {
   cors: {
-    origin: "https://flybook.com.bd", // আপনার ফ্রন্টএন্ডের পোর্ট
+    origin: ["https://flybook.com.bd", "https://flybook-f23c5.web.app"], // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
     credentials: true, 
   },
