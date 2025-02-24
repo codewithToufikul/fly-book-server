@@ -1043,6 +1043,7 @@ app.post("/opinion/post", async (req, res) => {
       userName: user.name,
       userProfileImage: user.profileImage,
       image: postData.image,
+      pdf: postData.pdf,
       description: postData.description,
       date: postData.date,
       time: postData.time,
