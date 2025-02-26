@@ -17,9 +17,13 @@ const app = express();
 const port = process.env.PORT || 5000;
 // Middleware
 app.use(cors({
-  origin: ['https://flybook.com.bd', 'http://localhost:5173'] // আপনার অনুমোদিত ডোমেইন
+  origin: ['https://flybook.com.bd', 'http://localhost:5173'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
 }));
-app.use(express.json());
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // MongoDB connection URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ivo4yuq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -64,7 +68,12 @@ const storage = new CloudinaryStorage({
   },
 });
 
-const upload = multer({ storage: storage });
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024 // 50MB limit
+  }
+});
 
 const getPdfPageCount = async (pdfUrl) => {
   try {
@@ -347,18 +356,20 @@ app.post(
         fileSize,
         pageCount = null;
 
-      if (req.files["pdfFile"]) {
+      if (req.files && req.files["pdfFile"]) {
         const pdfFile = req.files["pdfFile"][0];
         pdfUrl = pdfFile.path;
         fileSize = pdfFile.size;
         pageCount = await getPdfPageCount(pdfUrl);
-      } else {
+      } else if (pdfLink) {
         pdfUrl = pdfLink;
         pageCount = await getPdfPageCount(pdfLink);
+      } else {
+        return res.status(400).json({ message: "No PDF file or link provided" });
       }
 
-      const coverPhoto = req.files["coverPhoto"]
-        ? req.files["coverPhoto"][0].path
+      const coverPhoto = req.files && req.files["coverPhoto"] 
+        ? req.files["coverPhoto"][0].path 
         : null;
 
       const newBook = {
@@ -368,18 +379,28 @@ app.post(
         uploadMethod,
         pdfUrl,
         coverUrl: coverPhoto,
-        fileSize, // Store file size
-        pageCount, // Store number of pages
+        fileSize,
+        pageCount,
         description,
         timestamp: new Date(),
       };
 
       await pdfCollections.insertOne(newBook);
-      res
-        .status(201)
-        .json({ message: "PDF Book Uploaded Successfully", book: newBook });
+      res.status(201).json({ 
+        message: "PDF Book Uploaded Successfully", 
+        book: newBook 
+      });
     } catch (error) {
-      res.status(500).json({ message: "Server Error", error });
+      console.error("Upload error:", error);
+      if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(413).json({ 
+          message: "File is too large. Maximum size is 50MB" 
+        });
+      }
+      res.status(500).json({ 
+        message: "Server Error", 
+        error: error.message 
+      });
     }
   }
 );
