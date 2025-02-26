@@ -12,6 +12,7 @@ require("dotenv").config();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const http = require("http");
 const { Server } = require("socket.io");
+const { timeStamp } = require("console");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -339,71 +340,67 @@ app.get("/profile", async (req, res) => {
   }
 });
 
-app.post(
-  "/upload",
-  upload.fields([{ name: "pdfFile" }, { name: "coverPhoto" }]),
-  async (req, res) => {
-    try {
-      const {
-        bookName,
-        writerName,
-        pdfLink,
-        description,
-        uploadMethod,
-        category,
-      } = req.body;
-      let pdfUrl,
-        fileSize,
-        pageCount = null;
+// Upload PDF book endpoint
+app.post("/upload", async (req, res) => {
+  try {
+    const {
+      bookName,
+      writerName,
+      category,
+      uploadMethod,
+      description,
+      pdfUrl,
+      coverUrl,
+      pageCount,
+      fileSize
+    } = req.body;
 
-      if (req.files && req.files["pdfFile"]) {
-        const pdfFile = req.files["pdfFile"][0];
-        pdfUrl = pdfFile.path;
-        fileSize = pdfFile.size;
-        pageCount = await getPdfPageCount(pdfUrl);
-      } else if (pdfLink) {
-        pdfUrl = pdfLink;
-        pageCount = await getPdfPageCount(pdfLink);
-      } else {
-        return res.status(400).json({ message: "No PDF file or link provided" });
-      }
-
-      const coverPhoto = req.files && req.files["coverPhoto"] 
-        ? req.files["coverPhoto"][0].path 
-        : null;
-
-      const newBook = {
-        bookName,
-        writerName,
-        category,
-        uploadMethod,
-        pdfUrl,
-        coverUrl: coverPhoto,
-        fileSize,
-        pageCount,
-        description,
-        timestamp: new Date(),
-      };
-
-      await pdfCollections.insertOne(newBook);
-      res.status(201).json({ 
-        message: "PDF Book Uploaded Successfully", 
-        book: newBook 
-      });
-    } catch (error) {
-      console.error("Upload error:", error);
-      if (error.code === 'LIMIT_FILE_SIZE') {
-        return res.status(413).json({ 
-          message: "File is too large. Maximum size is 50MB" 
-        });
-      }
-      res.status(500).json({ 
-        message: "Server Error", 
-        error: error.message 
+    // Validate required fields
+    if (!bookName || !writerName || !category || !pdfUrl || !coverUrl) {
+      return res.status(400).json({ 
+        success: false,
+        message: "Missing required fields" 
       });
     }
+
+    // Create new PDF book document
+    const newPdfBook = {
+      bookName,
+      writerName,
+      category,
+      uploadMethod,
+      description,
+      pdfUrl,
+      coverUrl,
+      pageCount,
+      fileSize,
+      timestamp: new Date(), // Using createdAt is more standard than timestamp
+    };
+
+    const result = await pdfCollections.insertOne(newPdfBook);
+
+    if (result.acknowledged) {
+      res.status(201).json({
+        success: true,
+        message: "PDF book uploaded successfully",
+        bookId: result.insertedId
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: "Failed to upload PDF book"
+      });
+    }
+
+  } catch (error) {
+    console.error("Error uploading PDF book:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error"
+    });
   }
-);
+});
+
 
 app.get("/pdf-books", async (req, res) => {
   try {
