@@ -2166,6 +2166,81 @@ app.get("/admin/post-ai/:postId", async (req, res) => {
   }
 }); 
 
+app.delete("/admin/post-ai/:id", async (req, res) => {
+  const { id } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    if (currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. You are not an admin." });
+    }
+
+    const result = await adminAiPostCollections.deleteOne({ _id: new ObjectId(id) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ error: "Post not found." });
+    }
+
+    res.json({ message: "Post deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting post:", error);
+    res.status(500).json({ error: "Failed to delete post" });
+  }
+});
+
+app.put("/admin/post-ai/:id", async (req, res) => {
+  const { id } = req.params;
+  const { postData } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    if (currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. You are not an admin." });
+    }
+
+    const result = await adminAiPostCollections.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: postData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "Post not found." });
+    }
+
+    res.json({ message: "Post updated successfully" });
+  } catch (error) {
+    console.error("Error updating post:", error);
+    res.status(500).json({ error: "Failed to update post" });
+  }
+});
+
+
 
 
 
