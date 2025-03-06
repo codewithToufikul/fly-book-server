@@ -110,6 +110,7 @@ const pdfCollections = db.collection("pdfCollections");
 const notifyCollections = db.collection("notifyCollections");
 const noteCollections = db.collection("noteCollections");
 const homeCategoryCollection = db.collection("homeCategoryCollection");
+const adminAiPostCollections = db.collection("adminAiPostCollections");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
 // Create text index on opinions collection when the server starts
 (async () => {
@@ -1970,6 +1971,15 @@ app.delete("/user/delete/:userId", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+    if (currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. You are not an admin." });
+    }
 
     const result = await usersCollections.deleteOne({
       _id: new ObjectId(userId),
@@ -2009,7 +2019,15 @@ app.delete("/post/delete/:postId", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+    if (currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. You are not an admin." });
+    }
     const result = await opinionCollections.deleteOne({
       _id: new ObjectId(postId),
     });
@@ -2047,6 +2065,15 @@ app.post("/admin/post", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+    if (currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. You are not an admin." });
+    }
     const result = await adminPostCollections.insertOne(postData);
     res.send({
       success: true,
@@ -2067,6 +2094,15 @@ app.post("/admin/thesis", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+    if (currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. You are not an admin." });
+    }
     const result = await adminThesisCollections.insertOne(postData);
     res.send({
       success: true,
@@ -2078,6 +2114,60 @@ app.post("/admin/thesis", async (req, res) => {
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
+
+app.post("/admin/post-ai", async (req, res) => {
+  const { postData } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+    if (currentUser.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. You are not an admin." });
+    }
+    const result = await adminAiPostCollections.insertOne(postData);
+    res.send({
+      success: true,
+      message: "posted successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("JWT Verification Error:", error);
+    res.status(401).json({ error: "Invalid or expired token." });
+  }
+});
+
+app.get("/admin/post-ai", async (req, res) => {
+  try {
+    // Exclude the logged-in user and exclude passwords
+    const result = await adminAiPostCollections.find().toArray();
+
+    res.send(result);
+  } catch (error) {
+    console.error("Error fetching ai post:", error);
+  }
+});
+
+app.get("/admin/post-ai/:postId", async (req, res) => {
+  const { postId } = req.params;
+  try {
+    const result = await adminAiPostCollections.findOne({ _id: new ObjectId(postId) });
+    res.send(result); 
+  } catch (error) {
+    console.error("Error fetching ai post:", error);
+  }
+}); 
+
+
+
 
 app.get("/all-home-books", async (req, res) => {
   try {
@@ -2096,15 +2186,6 @@ app.get("/all-home-books", async (req, res) => {
   }
 });
 
-// app.get("/all-home-books", async (req, res) => {
-//   try {
-//     const post = await adminPostCollections.find().toArray();
-
-//     res.send(post);
-//   } catch (error) {
-//     console.error("Error fetching peoples:", error);
-//   }
-// });
 
 app.post("/admin-post/like", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
