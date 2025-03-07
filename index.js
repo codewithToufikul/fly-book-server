@@ -146,14 +146,14 @@ app.get("/search", async (req, res) => {
       return res.status(400).json({ message: "Search query is required." });
     }
 
-    const regex = new RegExp(searchQuery, "i"); // Case-insensitive search
+    const regex = new RegExp(searchQuery, "i");
     let combinedResults = {};
 
     try {
       const users = await usersCollections
         .find(
-          { name: regex },
-          { projection: { name: 1, email: 1, number: 1, profileImage: 1 } }
+          { $or: [{ name: regex }, { userName: regex }] },
+          { projection: { name: 1, email: 1, number: 1, profileImage: 1, userName: 1 } }
         )
         .toArray();
       combinedResults.users = users || [];
@@ -235,6 +235,22 @@ app.post("/users/register", async (req, res) => {
       });
     }
 
+    // Generate username from name
+    const baseName = name.toLowerCase().replace(/\s+/g, '');
+    let username = baseName;
+    let counter = 1;
+
+    // Keep checking and incrementing counter until we find a unique username
+    while (await usersCollections.findOne({ userName: username })) {
+      username = `${baseName}${Math.floor(Math.random() * 1000)}`;
+      counter++;
+      if (counter > 10) {
+        // Prevent infinite loop, add timestamp if needed
+        username = `${baseName}${Date.now()}`;
+        break;
+      }
+    }
+
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -243,6 +259,7 @@ app.post("/users/register", async (req, res) => {
       name,
       email,
       number,
+      userName: username,
       password: hashedPassword,
       verificationStatus: false,
       userLocation: {
@@ -321,6 +338,7 @@ app.get("/profile", async (req, res) => {
     res.json({
       id: user._id,
       name: user.name,
+      userName: user.userName,
       email: user.email,
       number: user.number,
       profileImage: user.profileImage,
