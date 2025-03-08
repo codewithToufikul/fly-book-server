@@ -192,6 +192,17 @@ app.get("/search", async (req, res) => {
       websiteResults.books = [];
     }
 
+    try {
+      const pdfBookBookResults = await pdfCollections  
+        .find({
+          $or: [{ bookName: regex }, { writerName: regex }],
+        })
+        .toArray();
+      websiteResults.pdfBooks = pdfBookBookResults || [];
+    } catch (bookError) {
+      console.error("Error fetching books:", bookError);
+      websiteResults.pdfBooks = [];
+    }
     // Google Custom Search results
     let googleResults = {};
     try {
