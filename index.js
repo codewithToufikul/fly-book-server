@@ -139,6 +139,8 @@ app.get("/", (req, res) => {
   res.send("API is running!");
 });
 
+
+// Combined search endpoint that matches the frontend implementation
 app.get("/search", async (req, res) => {
   try {
     const searchQuery = req.query.q;
@@ -146,8 +148,9 @@ app.get("/search", async (req, res) => {
       return res.status(400).json({ message: "Search query is required." });
     }
 
+    // Website search results
     const regex = new RegExp(searchQuery, "i");
-    let combinedResults = {};
+    let websiteResults = {};
 
     try {
       const users = await usersCollections
@@ -156,9 +159,10 @@ app.get("/search", async (req, res) => {
           { projection: { name: 1, email: 1, number: 1, profileImage: 1, userName: 1 } }
         )
         .toArray();
-      combinedResults.users = users || [];
+      websiteResults.users = users || [];
     } catch (userError) {
       console.error("Error fetching users:", userError);
+      websiteResults.users = [];
     }
 
     try {
@@ -170,9 +174,10 @@ app.get("/search", async (req, res) => {
         .find({ userName: regex })
         .toArray();
 
-      combinedResults.opinions = [...textSearchResults, ...regexSearchResults];
+      websiteResults.opinions = [...textSearchResults, ...regexSearchResults];
     } catch (opinionError) {
       console.error("Error fetching opinions:", opinionError);
+      websiteResults.opinions = [];
     }
 
     try {
@@ -181,45 +186,42 @@ app.get("/search", async (req, res) => {
           $or: [{ bookName: regex }, { owner: regex }],
         })
         .toArray();
-      combinedResults.books = bookResults || [];
+      websiteResults.books = bookResults || [];
     } catch (bookError) {
       console.error("Error fetching books:", bookError);
+      websiteResults.books = [];
     }
 
+    // Google Custom Search results
+    let googleResults = {};
     try {
-      const onindoBookResults = await onindoBookCollections
-        .find({
-          $or: [{ bookName: regex }, { owner: regex }],
-        })
-        .toArray();
-      combinedResults.onindoBooks = onindoBookResults || [];
-    } catch (onindoBookError) {
-      console.error("Error fetching Onindo books:", onindoBookError);
+      const GOOGLE_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
+      const SEARCH_ENGINE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID
+      
+      const googleSearchUrl = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(searchQuery)}&num=5&safe=active`;
+
+      const response = await fetch(googleSearchUrl);
+      googleResults = await response.json();
+    } catch (googleError) {
+      console.error("Error in Google search:", googleError);
+      googleResults = { items: [] };
     }
 
-    // Add PDF books search
-    try {
-      const pdfBookResults = await pdfCollections
-        .find({
-          $or: [
-            { bookName: regex },
-            { writerName: regex },
-            { description: regex },
-            { category: regex }
-          ]
-        })
-        .toArray();
-      combinedResults.pdfBooks = pdfBookResults || [];
-    } catch (pdfError) {
-      console.error("Error fetching PDF books:", pdfError);
-    }
+    // Combine both results
+    res.json({
+      websiteResults,
+      googleResults
+    });
 
-    res.json(combinedResults);
   } catch (error) {
-    console.error("Unexpected error in /search:", error);
-    res.status(500).json({ message: "Internal Server Error" });
+    console.error("Error in search:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
+
+
+
+
 
 // User Registration Route
 app.post("/users/register", async (req, res) => {
