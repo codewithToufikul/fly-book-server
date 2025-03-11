@@ -109,6 +109,7 @@ const messagesCollections = db.collection("messagesCollections");
 const pdfCollections = db.collection("pdfCollections");
 const notifyCollections = db.collection("notifyCollections");
 const noteCollections = db.collection("noteCollections");
+const organizationCollections = db.collection("organizationCollections");
 const homeCategoryCollection = db.collection("homeCategoryCollection");
 const adminAiPostCollections = db.collection("adminAiPostCollections");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
@@ -3117,7 +3118,119 @@ app.delete("/notes/:noteId", async (req, res) => {
   }
 });
 
+// Add organization endpoint
+app.post("/add-organizations", async (req, res) => {
+  try {
+    const {
+      orgName,
+      email,
+      phone,
+      website,
+      address,
+      description,
+      profileImage
+    } = req.body;
 
+    // Validate required fields
+    if (!orgName || !email || !phone || !address || !description || !profileImage) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide all required fields"
+      });
+    }
+
+    // Get current date and time
+    const currentDate = new Date();
+    const postDate = currentDate.toLocaleDateString();
+    const postTime = currentDate.toLocaleTimeString();
+
+    // Create organization document
+    const organization = {
+      orgName,
+      email,
+      phone,
+      website,
+      address, 
+      description,
+      profileImage,
+      status: "pending",
+      postDate,
+      postTime,
+      createdAt: currentDate
+    };
+
+    // Insert into database
+    const result = await organizationCollections.insertOne(organization);
+
+    if (!result.acknowledged) {
+      return res.status(400).json({
+        success: false,
+        message: "Failed to add organization"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Organization added successfully",
+      data: result
+    });
+
+  } catch (error) {
+    console.error("Error adding organization:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while adding the organization"
+    });
+  }
+});
+
+// Get all organizations
+app.get("/api/v1/organizations", async (req, res) => {
+  try {
+    const organizations = await organizationCollections.find({}).toArray();
+
+    res.status(200).json({
+      success: true,
+      message: "Organizations retrieved successfully",
+      data: organizations
+    });
+
+  } catch (error) {
+    console.error("Error retrieving organizations:", error);
+    res.status(500).json({
+      success: false, 
+      message: "An error occurred while retrieving organizations"
+    });
+  }
+});
+
+// Get organization by ID
+app.get("/api/v1/organizations/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const organization = await organizationCollections.findOne({ _id: new ObjectId(id) });
+
+    if (!organization) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Organization retrieved successfully",
+      data: organization
+    });
+
+  } catch (error) {
+    console.error("Error retrieving organization:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while retrieving the organization"
+    });
+  }
+});
 
 
 const server = app.listen(port, () => {
