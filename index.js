@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const bcrypt = require("bcrypt");
+const bcrypt = require('bcryptjs');
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const multer = require("multer");
@@ -19,7 +19,7 @@ const port = process.env.PORT || 5000;
 // Middleware
 app.use(cors({
   origin: ['https://flybook.com.bd', 'http://localhost:5173'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
@@ -3120,7 +3120,16 @@ app.delete("/notes/:noteId", async (req, res) => {
 
 // Add organization endpoint
 app.post("/add-organizations", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1]; 
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
   try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(403).json({ error: "Unauthorized access. Only admins can add organizations." });
+    }
     const {
       orgName,
       email,
@@ -3128,7 +3137,7 @@ app.post("/add-organizations", async (req, res) => {
       website,
       address,
       description,
-      profileImage
+      profileImage,
     } = req.body;
 
     // Validate required fields
@@ -3146,6 +3155,9 @@ app.post("/add-organizations", async (req, res) => {
 
     // Create organization document
     const organization = {
+      postBy: user._id,
+      postByName: user.name,
+      postByProfile: user.profileImage,
       orgName,
       email,
       phone,
@@ -3187,7 +3199,7 @@ app.post("/add-organizations", async (req, res) => {
 // Get all organizations
 app.get("/api/v1/organizations", async (req, res) => {
   try {
-    const organizations = await organizationCollections.find({}).toArray();
+    const organizations = await organizationCollections.find({status: {$eq: "pending"}}).toArray();
 
     res.status(200).json({
       success: true,
@@ -3203,6 +3215,76 @@ app.get("/api/v1/organizations", async (req, res) => {
     });
   }
 });
+
+app.get("/api/v1/organizations/aprooved", async (req, res) => {
+  try {
+    const organizations = await organizationCollections.find({status: {$eq: "accepted"}}).toArray();
+
+    res.status(200).json({
+      success: true,
+      message: "Organizations retrieved successfully",
+      data: organizations
+    });
+
+  } catch (error) {
+    console.error("Error retrieving organizations:", error);
+    res.status(500).json({
+      success: false, 
+      message: "An error occurred while retrieving organizations"
+    });
+  }
+});
+
+// ... existing code ...
+
+// Approve organization endpoint
+app.patch("/api/v1/organizations/:id/approve", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { id } = req.params;
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({
+        success: false,
+        message: "Unauthorized. Only admins can approve organizations."
+      });
+    }
+
+    const result = await organizationCollections.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status: "accepted" } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Organization approved successfully"
+    });
+
+  } catch (error) {
+    console.error("Error approving organization:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while approving the organization"
+    });
+  }
+});
+
+// ... existing code ...
+
 
 // Get organization by ID
 app.get("/api/v1/organizations/:id", async (req, res) => {
@@ -3231,6 +3313,228 @@ app.get("/api/v1/organizations/:id", async (req, res) => {
     });
   }
 });
+
+// Get organizations by user ID
+app.get("/api/v1/organizations/user/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const organizations = await organizationCollections.find({ postBy: new ObjectId(userId) }).toArray();
+
+    if (!organizations.length) {
+      return res.status(404).json({
+        success: false,
+        message: "No organizations found for this user"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Organizations retrieved successfully",
+      data: organizations
+    });
+
+  } catch (error) {
+    console.error("Error retrieving organizations by user ID:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while retrieving organizations by user ID"
+    });
+  }
+});
+
+// ... existing code ...
+
+// Add section to organization
+app.post("/organizations/:orgId/sections", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { orgId } = req.params;
+  
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { title, details, image, video } = req.body;
+
+    // Validate required fields
+    if (!title || !details) {
+      return res.status(400).json({
+        success: false,
+        message: "Title and details are required"
+      });
+    }
+
+    const section = {
+      title,
+      details,
+      image,
+      video,
+      createdAt: new Date()
+    };
+
+    // Update organization with new section
+    const result = await organizationCollections.updateOne(
+      { _id: new ObjectId(orgId) },
+      { $push: { sections: section } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found or section couldn't be added"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Section added successfully",
+      data: section
+    });
+
+  } catch (error) {
+    console.error("Error adding section:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while adding the section"
+    });
+  }
+});
+
+
+// ... existing code ...
+
+// Delete section from organization
+app.delete("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { orgId, sectionIndex } = req.params;
+  
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Find the organization and update it by removing the section at the specified index
+    const result = await organizationCollections.findOneAndUpdate(
+      { _id: new ObjectId(orgId) },
+      { 
+        $unset: { [`sections.${sectionIndex}`]: 1 }
+      },
+      { returnDocument: 'after' }
+    );
+
+    // Remove null values from the sections array
+    await organizationCollections.updateOne(
+      { _id: new ObjectId(orgId) },
+      { 
+        $pull: { sections: null }
+      }
+    );
+
+    if (!result.value) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found or section couldn't be deleted"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Section deleted successfully"
+    });
+
+  } catch (error) {
+    console.error("Error deleting section:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while deleting the section"
+    });
+  }
+});
+
+// ... existing code ...
+
+// Update section in organization
+app.put("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { orgId, sectionIndex } = req.params;
+  
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { title, details, image, video } = req.body;
+
+    // Validate required fields
+    if (!title || !details) {
+      return res.status(400).json({
+        success: false,
+        message: "Title and details are required"
+      });
+    }
+
+    // Update the specific section in the organization
+    const result = await organizationCollections.findOneAndUpdate(
+      { _id: new ObjectId(orgId) },
+      { 
+        $set: { 
+          [`sections.${sectionIndex}`]: {
+            title,
+            details,
+            image,
+            video,
+            updatedAt: new Date()
+          }
+        }
+      },
+      { returnDocument: 'after' }
+    );
+
+    if (!result.value) {
+      return res.status(404).json({
+        success: false,
+        message: "Organization not found or section couldn't be updated"
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Section updated successfully",
+      data: result.value.sections[sectionIndex]
+    });
+
+  } catch (error) {
+    console.error("Error updating section:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while updating the section"
+    });
+  }
+});
+
+// ... existing code ...
+
 
 
 const server = app.listen(port, () => {
