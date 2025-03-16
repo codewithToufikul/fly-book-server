@@ -3239,6 +3239,8 @@ app.get("/api/v1/organizations/aprooved", async (req, res) => {
 
 // Approve organization endpoint
 app.patch("/api/v1/organizations/:id/approve", async (req, res) => {
+  const {orgType} = req.body;
+  console.log(orgType)
   const token = req.headers.authorization?.split(" ")[1];
   const { id } = req.params;
 
@@ -3259,7 +3261,7 @@ app.patch("/api/v1/organizations/:id/approve", async (req, res) => {
 
     const result = await organizationCollections.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { status: "accepted" } }
+      { $set: { status: "accepted", orgType: orgType } }
     );
 
     if (result.matchedCount === 0) {
@@ -3534,6 +3536,151 @@ app.put("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
 });
 
 // ... existing code ...
+
+app.post("/api/v1/activities", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+      return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+      // Verify token and get user info
+      const decoded = jwt.verify(token, JWT_SECRET);
+      const user = await usersCollections.findOne({ number: decoded.number });
+      
+      if (!user) {
+          return res.status(404).json({ error: "User not found." });
+      }
+
+      const userId = user._id;  
+      const { title, date, place, details, image, organizationId } = req.body;
+
+      // Validate required fields
+      if (!title || !date || !place || !details || !organizationId) {
+          return res.status(400).json({ error: "Missing required fields" });
+      }
+
+      // Create activity document
+      const activity = {
+          _id: new ObjectId(),
+          title,
+          date,
+          place,
+          details,
+          image,
+          organizationId: new ObjectId(organizationId),
+          userName: user.name,
+          userId: userId,
+          userImage: user.profileImage,
+          createdAt: new Date()
+      };
+
+      // First, find the organization
+      const organization = await organizationCollections.findOne({ _id: new ObjectId(organizationId) });
+      if (!organization) {
+          return res.status(404).json({ error: "Organization not found." });
+      }
+
+      // Then, update the activities array
+      const updatedResult = await organizationCollections.findOneAndUpdate(
+          { _id: new ObjectId(organizationId) },
+          { 
+              $set: { 
+                  activities: [...(organization.activities || []), activity] 
+              }
+          },
+          { returnDocument: 'after' }
+      );
+
+      res.status(201).json({
+          success: true,
+          message: "Activity created successfully",
+          activityId: updatedResult.lastErrorObject.updatedExisting ? activity._id : null
+      });
+
+  } catch (error) {
+      console.error("Error creating activity:", error);
+      if (error.name === "JsonWebTokenError") {
+          return res.status(401).json({ error: "Invalid token" });
+      }
+      res.status(500).json({ error: "Failed to create activity" });
+  }
+});
+
+
+
+app.put("/api/v1/events/:activityId", async (req, res) => {
+  const { activityId } = req.params;
+  const { organizationId } = req.body;
+
+  try {
+
+      // Find the event containing the activity
+      const organization = await organizationCollections.findOne(new ObjectId(organizationId));
+      if (!organization) {
+          return res.status(404).json({ success: false, message: "Activity not found in any event" });
+      }
+      const activity = organization.activities.find(activity => activity._id.toString() === activityId);
+      if (!activity) {
+          return res.status(404).json({ success: false, message: "Activity not found" });
+      }
+      if (activity.event) {
+          return res.status(400).json({ success: false, message: "Activity already on event" });
+      }
+      activity.event = true;
+      await organizationCollections.updateOne(
+          { _id: new ObjectId(organizationId) },
+          { 
+              $set: { 
+                  activities: organization.activities
+              }
+          }
+      );
+      res.status(200).json({ success: true, message: "Activity moved to event successfully" });
+  } catch (error) {
+      console.error("Error moving activity:", error);
+      res.status(500).json({ success: false, message: "Failed to move activity to event." });
+  }
+});
+
+app.get("/api/v1/activity/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const activity = await organizationCollections.findOne(
+      { "activities._id": new ObjectId(id) },
+      { projection: { activities: { $elemMatch: { _id: new ObjectId(id) } } } }
+    );
+    if (!activity) {
+      return res.status(404).json({ error: "Activity not found" });
+    }
+    res.status(200).json({ data: activity.activities[0] });
+  } catch (error) {
+    console.error("Error getting activity:", error);
+    res.status(500).json({ error: "Failed to get activity" });
+  }
+});
+
+
+app.get("/organizations/activities", async (req, res) => {
+  try {
+    const organizations = await organizationCollections.find({status: {$eq: "accepted"}}, {projection: {activities: 1}}).toArray();
+
+    res.status(200).json({
+      success: true,
+      message: "Organizations retrieved successfully",
+      data: organizations
+    });
+
+  } catch (error) {
+    console.error("Error retrieving organizations:", error);
+    res.status(500).json({
+      success: false, 
+      message: "An error occurred while retrieving organizations"
+    });
+  }
+});
+
 
 
 
