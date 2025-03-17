@@ -1,6 +1,6 @@
 const express = require("express");
 const cors = require("cors");
-const bcrypt = require('bcryptjs');
+const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
 const multer = require("multer");
@@ -17,14 +17,16 @@ const { timeStamp } = require("console");
 const app = express();
 const port = process.env.PORT || 5000;
 // Middleware
-app.use(cors({
-  origin: ['https://flybook.com.bd', 'http://localhost:5173'],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
-}));
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ limit: '50mb', extended: true }));
+app.use(
+  cors({
+    origin: ["https://flybook.com.bd", "http://localhost:5173"],
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // MongoDB connection URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ivo4yuq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -72,8 +74,8 @@ const storage = new CloudinaryStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 50 * 1024 * 1024 // 50MB limit
-  }
+    fileSize: 50 * 1024 * 1024, // 50MB limit
+  },
 });
 
 const getPdfPageCount = async (pdfUrl) => {
@@ -140,7 +142,6 @@ app.get("/", (req, res) => {
   res.send("API is running!");
 });
 
-
 // Combined search endpoint that matches the frontend implementation
 app.get("/search", async (req, res) => {
   try {
@@ -157,7 +158,15 @@ app.get("/search", async (req, res) => {
       const users = await usersCollections
         .find(
           { $or: [{ name: regex }, { userName: regex }] },
-          { projection: { name: 1, email: 1, number: 1, profileImage: 1, userName: 1 } }
+          {
+            projection: {
+              name: 1,
+              email: 1,
+              number: 1,
+              profileImage: 1,
+              userName: 1,
+            },
+          }
         )
         .toArray();
       websiteResults.users = users || [];
@@ -194,7 +203,7 @@ app.get("/search", async (req, res) => {
     }
 
     try {
-      const pdfBookBookResults = await pdfCollections  
+      const pdfBookBookResults = await pdfCollections
         .find({
           $or: [{ bookName: regex }, { writerName: regex }],
         })
@@ -208,9 +217,11 @@ app.get("/search", async (req, res) => {
     let googleResults = {};
     try {
       const GOOGLE_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
-      const SEARCH_ENGINE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID
-      
-      const googleSearchUrl = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(searchQuery)}&num=5&safe=active`;
+      const SEARCH_ENGINE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
+
+      const googleSearchUrl = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(
+        searchQuery
+      )}&num=5&safe=active`;
 
       const response = await fetch(googleSearchUrl);
       googleResults = await response.json();
@@ -222,18 +233,13 @@ app.get("/search", async (req, res) => {
     // Combine both results
     res.json({
       websiteResults,
-      googleResults
+      googleResults,
     });
-
   } catch (error) {
     console.error("Error in search:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 });
-
-
-
-
 
 // User Registration Route
 app.post("/users/register", async (req, res) => {
@@ -250,7 +256,7 @@ app.post("/users/register", async (req, res) => {
     }
 
     // Generate username from name
-    const baseName = name.toLowerCase().replace(/\s+/g, '');
+    const baseName = name.toLowerCase().replace(/\s+/g, "");
     let username = baseName;
     let counter = 1;
 
@@ -385,14 +391,14 @@ app.post("/upload", async (req, res) => {
       pdfUrl,
       coverUrl,
       pageCount,
-      fileSize
+      fileSize,
     } = req.body;
 
     // Validate required fields
     if (!bookName || !writerName || !category || !pdfUrl || !coverUrl) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         success: false,
-        message: "Missing required fields" 
+        message: "Missing required fields",
       });
     }
 
@@ -416,24 +422,22 @@ app.post("/upload", async (req, res) => {
       res.status(201).json({
         success: true,
         message: "PDF book uploaded successfully",
-        bookId: result.insertedId
+        bookId: result.insertedId,
       });
     } else {
       res.status(400).json({
         success: false,
-        message: "Failed to upload PDF book"
+        message: "Failed to upload PDF book",
       });
     }
-
   } catch (error) {
     console.error("Error uploading PDF book:", error);
     res.status(500).json({
       success: false,
-      message: "Internal server error"
+      message: "Internal server error",
     });
   }
 });
-
 
 app.get("/pdf-books", async (req, res) => {
   try {
@@ -526,7 +530,7 @@ app.put("/profile/verification", async (req, res) => {
       { $set: { verificationStatus } }
     );
 
-    res.json({ message: "Verification status updated successfully" })
+    res.json({ message: "Verification status updated successfully" });
   } catch (error) {
     console.error("Error updating verification status:", error);
     res.status(500).json({ error: "Failed to update verification status." });
@@ -2010,7 +2014,9 @@ app.delete("/user/delete/:userId", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
     if (currentUser.role !== "admin") {
-      return res.status(403).json({ error: "Access denied. You are not an admin." });
+      return res
+        .status(403)
+        .json({ error: "Access denied. You are not an admin." });
     }
 
     const result = await usersCollections.deleteOne({
@@ -2058,7 +2064,9 @@ app.delete("/post/delete/:postId", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
     if (currentUser.role !== "admin") {
-      return res.status(403).json({ error: "Access denied. You are not an admin." });
+      return res
+        .status(403)
+        .json({ error: "Access denied. You are not an admin." });
     }
     const result = await opinionCollections.deleteOne({
       _id: new ObjectId(postId),
@@ -2104,7 +2112,9 @@ app.post("/admin/post", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
     if (currentUser.role !== "admin") {
-      return res.status(403).json({ error: "Access denied. You are not an admin." });
+      return res
+        .status(403)
+        .json({ error: "Access denied. You are not an admin." });
     }
     const result = await adminPostCollections.insertOne(postData);
     res.send({
@@ -2133,7 +2143,9 @@ app.post("/admin/thesis", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
     if (currentUser.role !== "admin") {
-      return res.status(403).json({ error: "Access denied. You are not an admin." });
+      return res
+        .status(403)
+        .json({ error: "Access denied. You are not an admin." });
     }
     const result = await adminThesisCollections.insertOne(postData);
     res.send({
@@ -2163,7 +2175,9 @@ app.post("/admin/post-ai", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
     if (currentUser.role !== "admin") {
-      return res.status(403).json({ error: "Access denied. You are not an admin." });
+      return res
+        .status(403)
+        .json({ error: "Access denied. You are not an admin." });
     }
     const result = await adminAiPostCollections.insertOne(postData);
     res.send({
@@ -2191,12 +2205,14 @@ app.get("/admin/post-ai", async (req, res) => {
 app.get("/admin/post-ai/:postId", async (req, res) => {
   const { postId } = req.params;
   try {
-    const result = await adminAiPostCollections.findOne({ _id: new ObjectId(postId) });
-    res.send(result); 
+    const result = await adminAiPostCollections.findOne({
+      _id: new ObjectId(postId),
+    });
+    res.send(result);
   } catch (error) {
     console.error("Error fetching ai post:", error);
   }
-}); 
+});
 
 app.delete("/admin/post-ai/:id", async (req, res) => {
   const { id } = req.params;
@@ -2217,10 +2233,14 @@ app.delete("/admin/post-ai/:id", async (req, res) => {
     }
 
     if (currentUser.role !== "admin") {
-      return res.status(403).json({ error: "Access denied. You are not an admin." });
+      return res
+        .status(403)
+        .json({ error: "Access denied. You are not an admin." });
     }
 
-    const result = await adminAiPostCollections.deleteOne({ _id: new ObjectId(id) });
+    const result = await adminAiPostCollections.deleteOne({
+      _id: new ObjectId(id),
+    });
 
     if (result.deletedCount === 0) {
       return res.status(404).json({ error: "Post not found." });
@@ -2253,7 +2273,9 @@ app.put("/admin/post-ai/:id", async (req, res) => {
     }
 
     if (currentUser.role !== "admin") {
-      return res.status(403).json({ error: "Access denied. You are not an admin." });
+      return res
+        .status(403)
+        .json({ error: "Access denied. You are not an admin." });
     }
 
     const result = await adminAiPostCollections.updateOne(
@@ -2272,19 +2294,15 @@ app.put("/admin/post-ai/:id", async (req, res) => {
   }
 });
 
-
-
-
-
 app.get("/all-home-books", async (req, res) => {
   try {
     const { category } = req.query;
     let query = {};
-    
+
     if (category && category !== "All") {
       query.category = category;
     }
-    
+
     const post = await adminPostCollections.find(query).toArray();
     res.send(post);
   } catch (error) {
@@ -2292,7 +2310,6 @@ app.get("/all-home-books", async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
 
 app.post("/admin-post/like", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -2499,8 +2516,6 @@ app.delete("/api/delete-conversation/:messageId", async (req, res) => {
   }
 });
 
-
-
 app.get("/api/chat-users", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
@@ -2532,30 +2547,35 @@ app.get("/api/chat-users", async (req, res) => {
     }
 
     // Safely extract unique user IDs with null checks
-    const uniqueUserIds = [...new Set(
-      chats.reduce((ids, msg) => {
-        if (msg.senderId && msg.receoientId) {
-          const senderId = msg.senderId.toString();
-          const receoientId = msg.receoientId.toString();
-          const userId = senderId === user._id.toString() ? receoientId : senderId;
-          if (userId) ids.push(userId);
-        }
-        return ids;
-      }, [])
-    )];
+    const uniqueUserIds = [
+      ...new Set(
+        chats.reduce((ids, msg) => {
+          if (msg.senderId && msg.receoientId) {
+            const senderId = msg.senderId.toString();
+            const receoientId = msg.receoientId.toString();
+            const userId =
+              senderId === user._id.toString() ? receoientId : senderId;
+            if (userId) ids.push(userId);
+          }
+          return ids;
+        }, [])
+      ),
+    ];
 
     // Fetch user details for valid IDs
     const chatUsers = await usersCollections
       .find({
-        _id: { 
-          $in: uniqueUserIds.map(id => {
-            try {
-              return new ObjectId(id);
-            } catch (e) {
-              return null;
-            }
-          }).filter(id => id !== null)
-        }
+        _id: {
+          $in: uniqueUserIds
+            .map((id) => {
+              try {
+                return new ObjectId(id);
+              } catch (e) {
+                return null;
+              }
+            })
+            .filter((id) => id !== null),
+        },
       })
       .project({ name: 1, profileImage: 1 })
       .toArray();
@@ -2739,22 +2759,25 @@ app.delete("/admin/category-delete/:categoryId", async (req, res) => {
     const user = await usersCollections.findOne({ number: decoded.number });
 
     if (user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Unauthorized access!" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Unauthorized access!" });
     }
 
     const result = await homeCategoryCollection.deleteOne({
-      _id: new ObjectId(categoryId)
+      _id: new ObjectId(categoryId),
     });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: "Category not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Category not found." });
     }
 
     res.status(200).json({
       success: true,
-      message: "Category deleted successfully"
+      message: "Category deleted successfully",
     });
-
   } catch (error) {
     console.error("Error while deleting category:", error);
     res.status(500).json({ error: "Internal server error" });
@@ -2775,7 +2798,9 @@ app.put("/admin/category-update/:categoryId", async (req, res) => {
     const user = await usersCollections.findOne({ number: decoded.number });
 
     if (user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Unauthorized access!" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Unauthorized access!" });
     }
 
     const result = await homeCategoryCollection.updateOne(
@@ -2784,17 +2809,18 @@ app.put("/admin/category-update/:categoryId", async (req, res) => {
     );
 
     if (result.matchedCount === 0) {
-      return res.status(404).json({ success: false, message: "Category not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Category not found." });
     }
 
     res.status(200).json({
       success: true,
-      message: "Category updated successfully"
+      message: "Category updated successfully",
     });
-
   } catch (error) {
     console.error("Error while updating category:", error);
-    
+
     if (error.name === "JsonWebTokenError") {
       return res.status(401).json({ error: "Invalid or expired token." });
     }
@@ -2802,7 +2828,6 @@ app.put("/admin/category-update/:categoryId", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
-
 
 app.put("/admin-post-edit/:postId", async (req, res) => {
   const { postId } = req.params;
@@ -2898,7 +2923,6 @@ app.get("/home-category", async (req, res) => {
   }
 });
 
-
 app.put("/pdf-books/:id", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   const { id } = req.params;
@@ -2917,34 +2941,36 @@ app.put("/pdf-books/:id", async (req, res) => {
         .json({ success: false, message: "Unauthorized access!" });
     }
 
-    const { bookName, writerName, category, pdfUrl, coverUrl, description } = req.body;
+    const { bookName, writerName, category, pdfUrl, coverUrl, description } =
+      req.body;
 
     const updatedBook = await pdfCollections.findOneAndUpdate(
       { _id: new ObjectId(id) },
       {
         $set: {
           bookName,
-          writerName, 
+          writerName,
           category,
           pdfUrl,
           coverUrl,
           description,
-          updatedAt: new Date()
-        }
+          updatedAt: new Date(),
+        },
       },
-      { returnDocument: 'after' }
+      { returnDocument: "after" }
     );
 
     if (!updatedBook.value) {
-      return res.status(404).json({ success: false, message: "Book not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Book not found" });
     }
 
-    res.json({ 
-      success: true, 
+    res.json({
+      success: true,
       message: "Book updated successfully",
-      book: updatedBook.value
+      book: updatedBook.value,
     });
-
   } catch (error) {
     console.error("Error updating book:", error);
 
@@ -2952,7 +2978,9 @@ app.put("/pdf-books/:id", async (req, res) => {
       return res.status(401).json({ error: "Invalid or expired token." });
     }
 
-    res.status(500).json({ error: "An error occurred while updating the book" });
+    res
+      .status(500)
+      .json({ error: "An error occurred while updating the book" });
   }
 });
 
@@ -2977,11 +3005,12 @@ app.delete("/pdf-books/:id", async (req, res) => {
     const result = await pdfCollections.deleteOne({ _id: new ObjectId(id) });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: "Book not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Book not found" });
     }
 
     res.json({ success: true, message: "Book deleted successfully" });
-
   } catch (error) {
     console.error("Error deleting book:", error);
 
@@ -2989,10 +3018,11 @@ app.delete("/pdf-books/:id", async (req, res) => {
       return res.status(401).json({ error: "Invalid or expired token." });
     }
 
-    res.status(500).json({ error: "An error occurred while deleting the book" });
+    res
+      .status(500)
+      .json({ error: "An error occurred while deleting the book" });
   }
 });
-
 
 app.post("/notes/add", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -3013,23 +3043,24 @@ app.post("/notes/add", async (req, res) => {
     const newNote = {
       userId: user._id,
       content: content,
-      createdAt: new Date()
+      createdAt: new Date(),
     };
 
     const result = await noteCollections.insertOne(newNote);
 
     if (!result.insertedId) {
-      return res.status(500).json({ success: false, error: "Failed to add note" });
+      return res
+        .status(500)
+        .json({ success: false, error: "Failed to add note" });
     }
 
     res.status(200).json({
       success: true,
       note: {
         _id: result.insertedId,
-        ...newNote
-      }
+        ...newNote,
+      },
     });
-
   } catch (error) {
     console.error("Error adding note:", error);
 
@@ -3063,9 +3094,8 @@ app.get("/notes", async (req, res) => {
 
     res.status(200).json({
       success: true,
-      notes: notes
+      notes: notes,
     });
-
   } catch (error) {
     console.error("Error fetching notes:", error);
 
@@ -3095,18 +3125,19 @@ app.delete("/notes/:noteId", async (req, res) => {
 
     const result = await noteCollections.deleteOne({
       _id: new ObjectId(noteId),
-      userId: user._id
+      userId: user._id,
     });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({ error: "Note not found or access denied." });
+      return res
+        .status(404)
+        .json({ error: "Note not found or access denied." });
     }
 
     res.status(200).json({
       success: true,
-      message: "Note deleted successfully"
+      message: "Note deleted successfully",
     });
-
   } catch (error) {
     console.error("Error deleting note:", error);
 
@@ -3114,13 +3145,15 @@ app.delete("/notes/:noteId", async (req, res) => {
       return res.status(401).json({ error: "Invalid or expired token." });
     }
 
-    res.status(500).json({ error: "An error occurred while deleting the note" });
+    res
+      .status(500)
+      .json({ error: "An error occurred while deleting the note" });
   }
 });
 
 // Add organization endpoint
 app.post("/add-organizations", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1]; 
+  const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
@@ -3128,7 +3161,11 @@ app.post("/add-organizations", async (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await usersCollections.findOne({ number: decoded.number });
     if (!user) {
-      return res.status(403).json({ error: "Unauthorized access. Only admins can add organizations." });
+      return res
+        .status(403)
+        .json({
+          error: "Unauthorized access. Only admins can add organizations.",
+        });
     }
     const {
       orgName,
@@ -3141,10 +3178,17 @@ app.post("/add-organizations", async (req, res) => {
     } = req.body;
 
     // Validate required fields
-    if (!orgName || !email || !phone || !address || !description || !profileImage) {
+    if (
+      !orgName ||
+      !email ||
+      !phone ||
+      !address ||
+      !description ||
+      !profileImage
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Please provide all required fields"
+        message: "Please provide all required fields",
       });
     }
 
@@ -3162,13 +3206,13 @@ app.post("/add-organizations", async (req, res) => {
       email,
       phone,
       website,
-      address, 
+      address,
       description,
       profileImage,
       status: "pending",
       postDate,
       postTime,
-      createdAt: currentDate
+      createdAt: currentDate,
     };
 
     // Insert into database
@@ -3177,21 +3221,20 @@ app.post("/add-organizations", async (req, res) => {
     if (!result.acknowledged) {
       return res.status(400).json({
         success: false,
-        message: "Failed to add organization"
+        message: "Failed to add organization",
       });
     }
 
     res.status(200).json({
       success: true,
       message: "Organization added successfully",
-      data: result
+      data: result,
     });
-
   } catch (error) {
     console.error("Error adding organization:", error);
     res.status(500).json({
       success: false,
-      message: "An error occurred while adding the organization"
+      message: "An error occurred while adding the organization",
     });
   }
 });
@@ -3199,38 +3242,40 @@ app.post("/add-organizations", async (req, res) => {
 // Get all organizations
 app.get("/api/v1/organizations", async (req, res) => {
   try {
-    const organizations = await organizationCollections.find({status: {$eq: "pending"}}).toArray();
+    const organizations = await organizationCollections
+      .find({ status: { $eq: "pending" } })
+      .toArray();
 
     res.status(200).json({
       success: true,
       message: "Organizations retrieved successfully",
-      data: organizations
+      data: organizations,
     });
-
   } catch (error) {
     console.error("Error retrieving organizations:", error);
     res.status(500).json({
-      success: false, 
-      message: "An error occurred while retrieving organizations"
+      success: false,
+      message: "An error occurred while retrieving organizations",
     });
   }
 });
 
 app.get("/api/v1/organizations/aprooved", async (req, res) => {
   try {
-    const organizations = await organizationCollections.find({status: {$eq: "accepted"}}).toArray();
+    const organizations = await organizationCollections
+      .find({ status: { $eq: "accepted" } })
+      .toArray();
 
     res.status(200).json({
       success: true,
       message: "Organizations retrieved successfully",
-      data: organizations
+      data: organizations,
     });
-
   } catch (error) {
     console.error("Error retrieving organizations:", error);
     res.status(500).json({
-      success: false, 
-      message: "An error occurred while retrieving organizations"
+      success: false,
+      message: "An error occurred while retrieving organizations",
     });
   }
 });
@@ -3239,8 +3284,8 @@ app.get("/api/v1/organizations/aprooved", async (req, res) => {
 
 // Approve organization endpoint
 app.patch("/api/v1/organizations/:id/approve", async (req, res) => {
-  const {orgType} = req.body;
-  console.log(orgType)
+  const { orgType } = req.body;
+  console.log(orgType);
   const token = req.headers.authorization?.split(" ")[1];
   const { id } = req.params;
 
@@ -3255,7 +3300,7 @@ app.patch("/api/v1/organizations/:id/approve", async (req, res) => {
     if (!user || user.role !== "admin") {
       return res.status(403).json({
         success: false,
-        message: "Unauthorized. Only admins can approve organizations."
+        message: "Unauthorized. Only admins can approve organizations.",
       });
     }
 
@@ -3267,51 +3312,50 @@ app.patch("/api/v1/organizations/:id/approve", async (req, res) => {
     if (result.matchedCount === 0) {
       return res.status(404).json({
         success: false,
-        message: "Organization not found"
+        message: "Organization not found",
       });
     }
 
     res.status(200).json({
       success: true,
-      message: "Organization approved successfully"
+      message: "Organization approved successfully",
     });
-
   } catch (error) {
     console.error("Error approving organization:", error);
     res.status(500).json({
       success: false,
-      message: "An error occurred while approving the organization"
+      message: "An error occurred while approving the organization",
     });
   }
 });
 
 // ... existing code ...
 
-
 // Get organization by ID
 app.get("/api/v1/organizations/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const organization = await organizationCollections.findOne({ _id: new ObjectId(id) });
+    const organization = await organizationCollections.findOne({
+      _id: new ObjectId(id),
+    });
 
     if (!organization) {
       return res.status(404).json({
         success: false,
-        message: "Organization not found"
+        message: "Organization not found",
       });
     }
 
     res.status(200).json({
       success: true,
       message: "Organization retrieved successfully",
-      data: organization
+      data: organization,
     });
-
   } catch (error) {
     console.error("Error retrieving organization:", error);
     res.status(500).json({
       success: false,
-      message: "An error occurred while retrieving the organization"
+      message: "An error occurred while retrieving the organization",
     });
   }
 });
@@ -3320,26 +3364,27 @@ app.get("/api/v1/organizations/:id", async (req, res) => {
 app.get("/api/v1/organizations/user/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    const organizations = await organizationCollections.find({ postBy: new ObjectId(userId) }).toArray();
+    const organizations = await organizationCollections
+      .find({ postBy: new ObjectId(userId) })
+      .toArray();
 
     if (!organizations.length) {
       return res.status(404).json({
         success: false,
-        message: "No organizations found for this user"
+        message: "No organizations found for this user",
       });
     }
 
     res.status(200).json({
       success: true,
       message: "Organizations retrieved successfully",
-      data: organizations
+      data: organizations,
     });
-
   } catch (error) {
     console.error("Error retrieving organizations by user ID:", error);
     res.status(500).json({
       success: false,
-      message: "An error occurred while retrieving organizations by user ID"
+      message: "An error occurred while retrieving organizations by user ID",
     });
   }
 });
@@ -3350,7 +3395,7 @@ app.get("/api/v1/organizations/user/:userId", async (req, res) => {
 app.post("/organizations/:orgId/sections", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   const { orgId } = req.params;
-  
+
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
@@ -3369,7 +3414,7 @@ app.post("/organizations/:orgId/sections", async (req, res) => {
     if (!title || !details) {
       return res.status(400).json({
         success: false,
-        message: "Title and details are required"
+        message: "Title and details are required",
       });
     }
 
@@ -3378,7 +3423,7 @@ app.post("/organizations/:orgId/sections", async (req, res) => {
       details,
       image,
       video,
-      createdAt: new Date()
+      createdAt: new Date(),
     };
 
     // Update organization with new section
@@ -3390,25 +3435,23 @@ app.post("/organizations/:orgId/sections", async (req, res) => {
     if (result.modifiedCount === 0) {
       return res.status(404).json({
         success: false,
-        message: "Organization not found or section couldn't be added"
+        message: "Organization not found or section couldn't be added",
       });
     }
 
     res.status(200).json({
       success: true,
       message: "Section added successfully",
-      data: section
+      data: section,
     });
-
   } catch (error) {
     console.error("Error adding section:", error);
     res.status(500).json({
       success: false,
-      message: "An error occurred while adding the section"
+      message: "An error occurred while adding the section",
     });
   }
 });
-
 
 // ... existing code ...
 
@@ -3416,7 +3459,7 @@ app.post("/organizations/:orgId/sections", async (req, res) => {
 app.delete("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   const { orgId, sectionIndex } = req.params;
-  
+
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
@@ -3432,37 +3475,36 @@ app.delete("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
     // Find the organization and update it by removing the section at the specified index
     const result = await organizationCollections.findOneAndUpdate(
       { _id: new ObjectId(orgId) },
-      { 
-        $unset: { [`sections.${sectionIndex}`]: 1 }
+      {
+        $unset: { [`sections.${sectionIndex}`]: 1 },
       },
-      { returnDocument: 'after' }
+      { returnDocument: "after" }
     );
 
     // Remove null values from the sections array
     await organizationCollections.updateOne(
       { _id: new ObjectId(orgId) },
-      { 
-        $pull: { sections: null }
+      {
+        $pull: { sections: null },
       }
     );
 
     if (!result.value) {
       return res.status(404).json({
         success: false,
-        message: "Organization not found or section couldn't be deleted"
+        message: "Organization not found or section couldn't be deleted",
       });
     }
 
     res.status(200).json({
       success: true,
-      message: "Section deleted successfully"
+      message: "Section deleted successfully",
     });
-
   } catch (error) {
     console.error("Error deleting section:", error);
     res.status(500).json({
       success: false,
-      message: "An error occurred while deleting the section"
+      message: "An error occurred while deleting the section",
     });
   }
 });
@@ -3473,7 +3515,7 @@ app.delete("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
 app.put("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   const { orgId, sectionIndex } = req.params;
-  
+
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
@@ -3492,45 +3534,44 @@ app.put("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
     if (!title || !details) {
       return res.status(400).json({
         success: false,
-        message: "Title and details are required"
+        message: "Title and details are required",
       });
     }
 
     // Update the specific section in the organization
     const result = await organizationCollections.findOneAndUpdate(
       { _id: new ObjectId(orgId) },
-      { 
-        $set: { 
+      {
+        $set: {
           [`sections.${sectionIndex}`]: {
             title,
             details,
             image,
             video,
-            updatedAt: new Date()
-          }
-        }
+            updatedAt: new Date(),
+          },
+        },
       },
-      { returnDocument: 'after' }
+      { returnDocument: "after" }
     );
 
     if (!result.value) {
       return res.status(404).json({
         success: false,
-        message: "Organization not found or section couldn't be updated"
+        message: "Organization not found or section couldn't be updated",
       });
     }
 
     res.status(200).json({
       success: true,
       message: "Section updated successfully",
-      data: result.value.sections[sectionIndex]
+      data: result.value.sections[sectionIndex],
     });
-
   } catch (error) {
     console.error("Error updating section:", error);
     res.status(500).json({
       success: false,
-      message: "An error occurred while updating the section"
+      message: "An error occurred while updating the section",
     });
   }
 });
@@ -3541,106 +3582,120 @@ app.post("/api/v1/activities", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
   if (!token) {
-      return res.status(401).json({ error: "Access denied. No token provided." });
+    return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
   try {
-      // Verify token and get user info
-      const decoded = jwt.verify(token, JWT_SECRET);
-      const user = await usersCollections.findOne({ number: decoded.number });
-      
-      if (!user) {
-          return res.status(404).json({ error: "User not found." });
-      }
+    // Verify token and get user info
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
 
-      const userId = user._id;  
-      const { title, date, place, details, image, organizationId } = req.body;
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
 
-      // Validate required fields
-      if (!title || !date || !place || !details || !organizationId) {
-          return res.status(400).json({ error: "Missing required fields" });
-      }
+    const userId = user._id;
+    const { title, date, place, details, image, organizationId } = req.body;
 
-      // Create activity document
-      const activity = {
-          _id: new ObjectId(),
-          title,
-          date,
-          place,
-          details,
-          image,
-          organizationId: new ObjectId(organizationId),
-          userName: user.name,
-          userId: userId,
-          userImage: user.profileImage,
-          createdAt: new Date()
-      };
+    // Validate required fields
+    if (!title || !date || !place || !details || !organizationId) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
 
-      // First, find the organization
-      const organization = await organizationCollections.findOne({ _id: new ObjectId(organizationId) });
-      if (!organization) {
-          return res.status(404).json({ error: "Organization not found." });
-      }
+    // Create activity document
+    const activity = {
+      _id: new ObjectId(),
+      title,
+      date,
+      place,
+      details,
+      image,
+      organizationId: new ObjectId(organizationId),
+      userName: user.name,
+      userId: userId,
+      userImage: user.profileImage,
+      createdAt: new Date(),
+    };
 
-      // Then, update the activities array
-      const updatedResult = await organizationCollections.findOneAndUpdate(
-          { _id: new ObjectId(organizationId) },
-          { 
-              $set: { 
-                  activities: [...(organization.activities || []), activity] 
-              }
-          },
-          { returnDocument: 'after' }
-      );
+    // First, find the organization
+    const organization = await organizationCollections.findOne({
+      _id: new ObjectId(organizationId),
+    });
+    if (!organization) {
+      return res.status(404).json({ error: "Organization not found." });
+    }
 
-      res.status(201).json({
-          success: true,
-          message: "Activity created successfully",
-          activityId: updatedResult.lastErrorObject.updatedExisting ? activity._id : null
-      });
+    // Then, update the activities array
+    const updatedResult = await organizationCollections.findOneAndUpdate(
+      { _id: new ObjectId(organizationId) },
+      {
+        $set: {
+          activities: [...(organization.activities || []), activity],
+        },
+      },
+      { returnDocument: "after" }
+    );
 
+    res.status(201).json({
+      success: true,
+      message: "Activity created successfully",
+      activityId: updatedResult.lastErrorObject.updatedExisting
+        ? activity._id
+        : null,
+    });
   } catch (error) {
-      console.error("Error creating activity:", error);
-      if (error.name === "JsonWebTokenError") {
-          return res.status(401).json({ error: "Invalid token" });
-      }
-      res.status(500).json({ error: "Failed to create activity" });
+    console.error("Error creating activity:", error);
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+    res.status(500).json({ error: "Failed to create activity" });
   }
 });
-
-
 
 app.put("/api/v1/events/:activityId", async (req, res) => {
   const { activityId } = req.params;
   const { organizationId } = req.body;
 
   try {
-
-      // Find the event containing the activity
-      const organization = await organizationCollections.findOne(new ObjectId(organizationId));
-      if (!organization) {
-          return res.status(404).json({ success: false, message: "Activity not found in any event" });
+    // Find the event containing the activity
+    const organization = await organizationCollections.findOne(
+      new ObjectId(organizationId)
+    );
+    if (!organization) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Activity not found in any event" });
+    }
+    const activity = organization.activities.find(
+      (activity) => activity._id.toString() === activityId
+    );
+    if (!activity) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Activity not found" });
+    }
+    if (activity.event) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Activity already on event" });
+    }
+    activity.event = true;
+    await organizationCollections.updateOne(
+      { _id: new ObjectId(organizationId) },
+      {
+        $set: {
+          activities: organization.activities,
+        },
       }
-      const activity = organization.activities.find(activity => activity._id.toString() === activityId);
-      if (!activity) {
-          return res.status(404).json({ success: false, message: "Activity not found" });
-      }
-      if (activity.event) {
-          return res.status(400).json({ success: false, message: "Activity already on event" });
-      }
-      activity.event = true;
-      await organizationCollections.updateOne(
-          { _id: new ObjectId(organizationId) },
-          { 
-              $set: { 
-                  activities: organization.activities
-              }
-          }
-      );
-      res.status(200).json({ success: true, message: "Activity moved to event successfully" });
+    );
+    res
+      .status(200)
+      .json({ success: true, message: "Activity moved to event successfully" });
   } catch (error) {
-      console.error("Error moving activity:", error);
-      res.status(500).json({ success: false, message: "Failed to move activity to event." });
+    console.error("Error moving activity:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to move activity to event." });
   }
 });
 
@@ -3661,28 +3716,99 @@ app.get("/api/v1/activity/:id", async (req, res) => {
   }
 });
 
-
 app.get("/organizations/activities", async (req, res) => {
   try {
-    const organizations = await organizationCollections.find({status: {$eq: "accepted"}}, {projection: {activities: 1}}).toArray();
+    const organizations = await organizationCollections
+      .find({ status: { $eq: "accepted" } }, { projection: { activities: 1 } })
+      .toArray();
 
     res.status(200).json({
       success: true,
       message: "Organizations retrieved successfully",
-      data: organizations
+      data: organizations,
     });
-
   } catch (error) {
     console.error("Error retrieving organizations:", error);
     res.status(500).json({
-      success: false, 
-      message: "An error occurred while retrieving organizations"
+      success: false,
+      message: "An error occurred while retrieving organizations",
     });
   }
 });
 
+app.delete("/api/v1/activities/:activityId/:orgId", async (req, res) => {
+  const { activityId, orgId } = req.params;
+  try {
+    const org = await organizationCollections.findOne({
+      _id: new ObjectId(orgId),
+    });
+    const activity = org.activities.find(
+      (activity) => activity._id.toString() === activityId
+    );
+    if (!activity) {
+      return res.status(404).json({ error: "Activity not found" });
+    }
+    const updatedOrg = await organizationCollections.findOneAndUpdate(
+      { _id: new ObjectId(orgId) },
+      { $pull: { activities: { _id: new ObjectId(activityId) } } },
+      { returnDocument: "after" }
+    );
+    res.status(200).json({ success: true, data: updatedOrg });
+  } catch (error) {
+    console.error("Error getting activity:", error);
+    res.status(500).json({ error: "Failed to get activity" });
+  }
+});
 
+app.put("/api/v1/activities/:activityId/:orgId", async (req, res) => {
+  const { activityId, orgId } = req.params;
+  const { title, date, place, details, image } = req.body;
 
+  try {
+    const updatedOrg = await organizationCollections.findOneAndUpdate(
+      { _id: new ObjectId(orgId), "activities._id": new ObjectId(activityId) },
+      {
+        $set: {
+          "activities.$.title": title,
+          "activities.$.date": date,
+          "activities.$.place": place,
+          "activities.$.details": details,
+          "activities.$.image": image,
+        },
+      },
+      { returnDocument: "after" }
+    );
+
+    if (!updatedOrg) {
+      return res
+        .status(404)
+        .json({ success: false, error: "Activity not found" });
+    }
+
+    res.status(200).json({ success: true, data: updatedOrg });
+  } catch (error) {
+    console.error("Error updating activity:", error);
+    res
+      .status(500)
+      .json({ success: false, error: "Failed to update activity" });
+  }
+});
+
+app.get("/social-organization", async(req, res) => {
+  try {
+    const organizations = await organizationCollections
+      .find({ status: { $eq: "accepted" }, orgType: { $eq: "social organization" } })
+      .toArray();
+
+    res.status(200).json({ success: true, data: organizations });
+  } catch (error) {
+    console.error("Error retrieving organizations:", error);
+    res.status(500).json({
+      success: false,
+      message: "An error occurred while retrieving organizations",
+    });
+  }
+})
 
 const server = app.listen(port, () => {
   console.log(`Server running http://localhost:${port}`);
@@ -3692,7 +3818,7 @@ const io = new Server(server, {
   cors: {
     origin: ["https://flybook.com.bd", "https://flybook-f23c5.web.app"], // আপনার ফ্রন্টএন্ডের পোর্ট
     methods: ["GET", "POST"],
-    credentials: true, 
+    credentials: true,
   },
 });
 
