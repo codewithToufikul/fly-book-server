@@ -142,6 +142,41 @@ app.get("/", (req, res) => {
   res.send("API is running!");
 });
 
+app.post("/api/translate", async (req, res) => {
+  const { text, targetLang, srcLang } = req.body;
+
+  try {
+    const response = await fetch(
+      "https://api-inference.huggingface.co/models/facebook/nllb-200-distilled-600M",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${process.env.HUGGING_FACE_API_KEY}`, // API Key যোগ করুন
+        },
+        body: JSON.stringify({ 
+          inputs: text, 
+          parameters: { 
+            src_lang: srcLang,  // Source Language এখানে যোগ করুন
+            tgt_lang: targetLang 
+          }
+        }),
+      }
+    );
+
+    const data = await response.json();
+    console.log(data);
+    if (data.error) {
+      return res.status(500).json({ error: data.error });
+    }
+
+    res.json({ translation: data[0].translation_text });
+  } catch (error) {
+    res.status(500).json({ error: "Translation failed!" });
+  }
+});
+
+
 // Combined search endpoint that matches the frontend implementation
 app.get("/search", async (req, res) => {
   try {
