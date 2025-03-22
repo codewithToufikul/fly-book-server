@@ -214,6 +214,7 @@ app.get("/search", async (req, res) => {
       // Check if the response is JSON
       const contentType = response.headers.get("Content-Type");
       if (contentType && contentType.includes("application/json")) {
+        const data = await response.json(); // Parse the response JSON
         console.log(data);
         if (Array.isArray(data) && data.length > 0) {
           aiResult = data[0]?.generated_text || aiResult;
@@ -227,6 +228,7 @@ app.get("/search", async (req, res) => {
       console.error("Hugging Face API Error:", error);
       aiResult = "No AI result found"; // Fallback message
     }
+    
     
 
     // ✅ Fetch website users
