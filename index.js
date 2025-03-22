@@ -116,6 +116,11 @@ const homeCategoryCollection = db.collection("homeCategoryCollection");
 const adminAiPostCollections = db.collection("adminAiPostCollections");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
 // Create text index on opinions collection when the server starts
+
+const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
+const GOOGLE_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
+const SEARCH_ENGINE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
+
 (async () => {
   try {
     await connectToMongo();
@@ -165,7 +170,6 @@ app.post("/api/translate", async (req, res) => {
     );
 
     const data = await response.json();
-    console.log(data);
     if (data.error) {
       return res.status(500).json({ error: data.error });
     }
@@ -185,88 +189,107 @@ app.get("/search", async (req, res) => {
       return res.status(400).json({ message: "Search query is required." });
     }
 
-    // Website search results
     const regex = new RegExp(searchQuery, "i");
     let websiteResults = {};
+    let aiResult = "No AI result found";
 
+    // ✅ Fetch AI-generated result from Hugging Face
+    try {
+      const response = await fetch("https://api-inference.huggingface.co/models/tiiuae/falcon-7b-instruct", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${HUGGING_FACE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          inputs: `Explain '${searchQuery}' in 3 short lines only.`,
+          parameters: {
+            max_new_tokens: 30,
+            temperature: 0.3,
+            top_p: 0.8,
+          },
+        }),
+      });
+    
+      // Check if the response is JSON
+      const contentType = response.headers.get("Content-Type");
+      if (contentType && contentType.includes("application/json")) {
+        console.log(data);
+        if (Array.isArray(data) && data.length > 0) {
+          aiResult = data[0]?.generated_text || aiResult;
+        }
+      } else {
+        const errorText = await response.text(); // Read the error page
+        console.error("Error from Hugging Face:", errorText);
+        aiResult = "Failed to fetch AI result. Please try again later.";
+      }
+    } catch (error) {
+      console.error("Hugging Face API Error:", error);
+      aiResult = "No AI result found"; // Fallback message
+    }
+    
+
+    // ✅ Fetch website users
     try {
       const users = await usersCollections
         .find(
           { $or: [{ name: regex }, { userName: regex }] },
-          {
-            projection: {
-              name: 1,
-              email: 1,
-              number: 1,
-              profileImage: 1,
-              userName: 1,
-            },
-          }
+          { projection: { name: 1, email: 1, number: 1, profileImage: 1, userName: 1 } }
         )
         .toArray();
       websiteResults.users = users || [];
-    } catch (userError) {
-      console.error("Error fetching users:", userError);
+    } catch (error) {
+      console.error("Error fetching users:", error);
       websiteResults.users = [];
     }
 
+    // ✅ Fetch opinions (text search + regex search)
     try {
-      const textSearchResults = await opinionCollections
-        .find({ $text: { $search: searchQuery } })
-        .toArray();
-
-      const regexSearchResults = await opinionCollections
-        .find({ userName: regex })
-        .toArray();
-
+      const textSearchResults = await opinionCollections.find({ $text: { $search: searchQuery } }).toArray();
+      const regexSearchResults = await opinionCollections.find({ userName: regex }).toArray();
       websiteResults.opinions = [...textSearchResults, ...regexSearchResults];
-    } catch (opinionError) {
-      console.error("Error fetching opinions:", opinionError);
+    } catch (error) {
+      console.error("Error fetching opinions:", error);
       websiteResults.opinions = [];
     }
 
+    // ✅ Fetch books
     try {
-      const bookResults = await bookCollections
-        .find({
-          $or: [{ bookName: regex }, { owner: regex }],
-        })
-        .toArray();
+      const bookResults = await bookCollections.find({ $or: [{ bookName: regex }, { owner: regex }] }).toArray();
       websiteResults.books = bookResults || [];
-    } catch (bookError) {
-      console.error("Error fetching books:", bookError);
+    } catch (error) {
+      console.error("Error fetching books:", error);
       websiteResults.books = [];
     }
 
+    // ✅ Fetch PDF books
     try {
-      const pdfBookBookResults = await pdfCollections
-        .find({
-          $or: [{ bookName: regex }, { writerName: regex }],
-        })
-        .toArray();
-      websiteResults.pdfBooks = pdfBookBookResults || [];
-    } catch (bookError) {
-      console.error("Error fetching books:", bookError);
+      const pdfBookResults = await pdfCollections.find({ $or: [{ bookName: regex }, { writerName: regex }] }).toArray();
+      websiteResults.pdfBooks = pdfBookResults || [];
+    } catch (error) {
+      console.error("Error fetching PDF books:", error);
       websiteResults.pdfBooks = [];
     }
-    // Google Custom Search results
-    let googleResults = {};
-    try {
-      const GOOGLE_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
-      const SEARCH_ENGINE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
 
-      const googleSearchUrl = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(
-        searchQuery
-      )}&num=5&safe=active`;
+    // ✅ Google Custom Search results
+    let googleResults = { items: [] };
+    if (GOOGLE_API_KEY && SEARCH_ENGINE_ID) {
+      try {
+        const googleSearchUrl = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(
+          searchQuery
+        )}&num=5&safe=active`;
 
-      const response = await fetch(googleSearchUrl);
-      googleResults = await response.json();
-    } catch (googleError) {
-      console.error("Error in Google search:", googleError);
-      googleResults = { items: [] };
+        const response = await fetch(googleSearchUrl);
+        const googleData = await response.json();
+        googleResults = googleData.items ? googleData : { items: [] };
+      } catch (error) {
+        console.error("Error in Google search:", error);
+      }
     }
 
-    // Combine both results
+    // ✅ Send the final response
     res.json({
+      aiResult,
       websiteResults,
       googleResults,
     });
@@ -275,6 +298,7 @@ app.get("/search", async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+
 
 // User Registration Route
 app.post("/users/register", async (req, res) => {
