@@ -13,6 +13,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const http = require("http");
 const { Server } = require("socket.io");
 const { timeStamp } = require("console");
+const { translate } = require('@vitalets/google-translate-api');
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -120,6 +121,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
 const GOOGLE_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const SEARCH_ENGINE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
+const GMINI_API_KEY = process.env.GMINI_API_KEY;
 
 (async () => {
   try {
@@ -148,34 +150,14 @@ app.get("/", (req, res) => {
 });
 
 app.post("/api/translate", async (req, res) => {
-  const { text, targetLang, srcLang } = req.body;
+  const { text, targetLang } = req.body;
 
   try {
-    const response = await fetch(
-      "https://api-inference.huggingface.co/models/facebook/nllb-200-distilled-600M",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${process.env.HUGGING_FACE_API_KEY}`, // API Key যোগ করুন
-        },
-        body: JSON.stringify({ 
-          inputs: text, 
-          parameters: { 
-            src_lang: srcLang,  // Source Language এখানে যোগ করুন
-            tgt_lang: targetLang 
-          }
-        }),
-      }
-    );
-
-    const data = await response.json();
-    if (data.error) {
-      return res.status(500).json({ error: data.error });
-    }
-
-    res.json({ translation: data[0].translation_text });
+    const { text: translatedText } = await translate(text, { to: targetLang });
+    console.log(targetLang);
+    res.json({ translation: translatedText });
   } catch (error) {
+    console.error("Translation Error:", error);
     res.status(500).json({ error: "Translation failed!" });
   }
 });
@@ -195,19 +177,17 @@ app.get("/search", async (req, res) => {
 
     // ✅ Fetch AI-generated result from Hugging Face
     try {
-      const response = await fetch("https://api-inference.huggingface.co/models/tiiuae/falcon-7b-instruct", {
+      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GMINI_API_KEY}`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${HUGGING_FACE_API_KEY}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          inputs: `Explain '${searchQuery}' in 3 short lines only.`,
-          parameters: {
-            max_new_tokens: 30,
-            temperature: 0.3,
-            top_p: 0.8,
-          },
+          contents: [{
+            parts: [{ text: `You are an AI-powered search assistant. Your task is to provide an answer exactly as Google AI Search would. 
+                    Ensure the response is factually accurate, clear, and formatted similarly to Google's AI-generated search snippets.
+                    Prioritize well-known meanings and authoritative sources. Query: '${searchQuery}'` }]
+          }]
         }),
       });
     
@@ -215,19 +195,23 @@ app.get("/search", async (req, res) => {
       const contentType = response.headers.get("Content-Type");
       if (contentType && contentType.includes("application/json")) {
         const data = await response.json(); // Parse the response JSON
-        console.log(data);
-        if (Array.isArray(data) && data.length > 0) {
-          aiResult = data[0]?.generated_text || aiResult;
+    
+        if (data?.candidates && data.candidates.length > 0) {
+          aiResult = data.candidates[0].content.parts[0].text; // Extract response text
+        } else {
+          aiResult = "No response from AI.";
         }
       } else {
-        const errorText = await response.text(); // Read the error page
-        console.error("Error from Hugging Face:", errorText);
+        const errorText = await response.text(); // Read error response
+        console.error("Error from Gemini API:", errorText);
         aiResult = "Failed to fetch AI result. Please try again later.";
       }
     } catch (error) {
-      console.error("Hugging Face API Error:", error);
+      console.error("Gemini API Error:", error);
       aiResult = "No AI result found"; // Fallback message
     }
+    
+    
     
     
 
