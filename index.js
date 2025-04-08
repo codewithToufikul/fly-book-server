@@ -13,7 +13,7 @@ const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 const http = require("http");
 const { Server } = require("socket.io");
 const { timeStamp } = require("console");
-const { translate } = require('@vitalets/google-translate-api');
+const { translate } = require("@vitalets/google-translate-api");
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -162,7 +162,6 @@ app.post("/api/translate", async (req, res) => {
   }
 });
 
-
 // Combined search endpoint that matches the frontend implementation
 app.get("/search", async (req, res) => {
   try {
@@ -170,57 +169,57 @@ app.get("/search", async (req, res) => {
     if (!searchQuery) {
       return res.status(400).json({ message: "Search query is required." });
     }
-
     const regex = new RegExp(searchQuery, "i");
     let websiteResults = {};
     let aiResult = "No AI result found";
-
     // ✅ Fetch AI-generated result from Hugging Face
     try {
-      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GMINI_API_KEY}`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [{
-            parts: [{ text: `You are an AI-powered search assistant. Your task is to provide an answer exactly as Google AI Search would. 
-                    Ensure the response is factually accurate, clear, and formatted similarly to Google's AI-generated search snippets.
-                    Prioritize well-known meanings and authoritative sources. Query: '${searchQuery}'` }]
-          }]
-        }),
-      });
-    
+      const response = await fetch(
+        `https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${process.env.HUGGING_FACE_API_KEY}`,
+          },
+          body: JSON.stringify({
+            inputs: `Define in 2-3 brief sentences: ${searchQuery}`,
+          }),
+        }
+      );
       // Check if the response is JSON
       const contentType = response.headers.get("Content-Type");
       if (contentType && contentType.includes("application/json")) {
         const data = await response.json(); // Parse the response JSON
-    
-        if (data?.candidates && data.candidates.length > 0) {
-          aiResult = data.candidates[0].content.parts[0].text; // Extract response text
+        if (data && data[0] && data[0].generated_text) {
+          aiResult = data[0].generated_text; // Extract response text
         } else {
           aiResult = "No response from AI.";
         }
       } else {
         const errorText = await response.text(); // Read error response
-        console.error("Error from Gemini API:", errorText);
+        console.error("Error from Hugging Face API:", errorText);
         aiResult = "Failed to fetch AI result. Please try again later.";
       }
     } catch (error) {
-      console.error("Gemini API Error:", error);
+      console.error("Hugging Face API Error:", error);
       aiResult = "No AI result found"; // Fallback message
     }
-    
-    
-    
-    
 
     // ✅ Fetch website users
     try {
       const users = await usersCollections
         .find(
           { $or: [{ name: regex }, { userName: regex }] },
-          { projection: { name: 1, email: 1, number: 1, profileImage: 1, userName: 1 } }
+          {
+            projection: {
+              name: 1,
+              email: 1,
+              number: 1,
+              profileImage: 1,
+              userName: 1,
+            },
+          }
         )
         .toArray();
       websiteResults.users = users || [];
@@ -231,8 +230,12 @@ app.get("/search", async (req, res) => {
 
     // ✅ Fetch opinions (text search + regex search)
     try {
-      const textSearchResults = await opinionCollections.find({ $text: { $search: searchQuery } }).toArray();
-      const regexSearchResults = await opinionCollections.find({ userName: regex }).toArray();
+      const textSearchResults = await opinionCollections
+        .find({ $text: { $search: searchQuery } })
+        .toArray();
+      const regexSearchResults = await opinionCollections
+        .find({ userName: regex })
+        .toArray();
       websiteResults.opinions = [...textSearchResults, ...regexSearchResults];
     } catch (error) {
       console.error("Error fetching opinions:", error);
@@ -241,7 +244,9 @@ app.get("/search", async (req, res) => {
 
     // ✅ Fetch books
     try {
-      const bookResults = await bookCollections.find({ $or: [{ bookName: regex }, { owner: regex }] }).toArray();
+      const bookResults = await bookCollections
+        .find({ $or: [{ bookName: regex }, { owner: regex }] })
+        .toArray();
       websiteResults.books = bookResults || [];
     } catch (error) {
       console.error("Error fetching books:", error);
@@ -250,7 +255,9 @@ app.get("/search", async (req, res) => {
 
     // ✅ Fetch PDF books
     try {
-      const pdfBookResults = await pdfCollections.find({ $or: [{ bookName: regex }, { writerName: regex }] }).toArray();
+      const pdfBookResults = await pdfCollections
+        .find({ $or: [{ bookName: regex }, { writerName: regex }] })
+        .toArray();
       websiteResults.pdfBooks = pdfBookResults || [];
     } catch (error) {
       console.error("Error fetching PDF books:", error);
@@ -284,7 +291,6 @@ app.get("/search", async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
-
 
 // User Registration Route
 app.post("/users/register", async (req, res) => {
@@ -3206,11 +3212,9 @@ app.post("/add-organizations", async (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await usersCollections.findOne({ number: decoded.number });
     if (!user) {
-      return res
-        .status(403)
-        .json({
-          error: "Unauthorized access. Only admins can add organizations.",
-        });
+      return res.status(403).json({
+        error: "Unauthorized access. Only admins can add organizations.",
+      });
     }
     const {
       orgName,
@@ -3839,10 +3843,13 @@ app.put("/api/v1/activities/:activityId/:orgId", async (req, res) => {
   }
 });
 
-app.get("/social-organization", async(req, res) => {
+app.get("/social-organization", async (req, res) => {
   try {
     const organizations = await organizationCollections
-      .find({ status: { $eq: "accepted" }, orgType: { $eq: "social organization" } })
+      .find({
+        status: { $eq: "accepted" },
+        orgType: { $eq: "social organization" },
+      })
       .toArray();
 
     res.status(200).json({ success: true, data: organizations });
@@ -3853,7 +3860,7 @@ app.get("/social-organization", async(req, res) => {
       message: "An error occurred while retrieving organizations",
     });
   }
-})
+});
 
 const server = app.listen(port, () => {
   console.log(`Server running http://localhost:${port}`);
