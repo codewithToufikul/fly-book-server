@@ -106,6 +106,7 @@ const opinionCollections = db.collection("opinionCollections");
 const adminPostCollections = db.collection("adminPostCollections");
 const adminThesisCollections = db.collection("adminThesisCollections");
 const bookCollections = db.collection("bookCollections");
+
 const onindoBookCollections = db.collection("onindoBookCollections");
 const bookTransCollections = db.collection("bookTransCollections");
 const messagesCollections = db.collection("messagesCollections");
@@ -116,6 +117,8 @@ const organizationCollections = db.collection("organizationCollections");
 const homeCategoryCollection = db.collection("homeCategoryCollection");
 const adminAiPostCollections = db.collection("adminAiPostCollections");
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
+const channelsCollection = db.collection("Channels");
+const channelessagesCollection = db.collection('channelMessages');
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -137,7 +140,7 @@ const GMINI_API_KEY = process.env.GMINI_API_KEY;
 (async () => {
   try {
     await connectToMongo();
-    await usersCollections.createIndex({ userLocation: "2dsphere" });
+    await bookCollections.createIndex({ location: "2dsphere" });
     console.log("location index created successfully!");
   } catch (error) {
     console.error("Error creating location index:", error);
@@ -1300,6 +1303,7 @@ app.post("/books/add", async (req, res) => {
       currentDate: bookAllData.currentDate,
       currentTime: bookAllData.currentTime,
       returnTime: bookAllData.returnTime,
+      location: bookAllData.location,
       owner: currentUser.name,
     };
     const result = await bookCollections.insertOne(bookData);
@@ -3861,6 +3865,242 @@ app.get("/social-organization", async (req, res) => {
     });
   }
 });
+
+
+
+  // POST /api/channels
+  app.post('/api/channels', async (req, res) => {
+    try {
+      const channelData = req.body;
+
+      // Optionally validate required fields
+      if (!channelData.name || !channelData.creator) {
+        return res.status(400).json({ message: "Name and creator are required." });
+      }
+
+      const result = await channelsCollection.insertOne(channelData);
+      res.status(201).json({ message: 'Channel created successfully', channelId: result.insertedId });
+    } catch (error) {
+      console.error("Error inserting channel:", error);
+      res.status(500).json({ message: "Internal server error" });
+    }
+  });
+
+
+  // GET /api/channels
+app.get('/api/channels', async (req, res) => {
+  try {
+    const channels = await channelsCollection.find({status: "approved"}).toArray();
+    res.status(200).json(channels);
+  } catch (error) {
+    console.error("Error fetching channels:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get('/api/channels/admin', async (req, res) => {
+  try {
+    console.log('hit')
+    const channels = await channelsCollection.find({}).toArray();
+    res.status(200).json(channels);
+  } catch (error) {
+    console.error("Error fetching channels:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.patch('/api/channels/:channelId/status', async (req, res) => {
+  const { channelId } = req.params;
+  const { status } = req.body;
+
+  try {
+    const result = await channelsCollection.updateOne(
+      { _id: new ObjectId(channelId) },
+      { $set: { status } }
+    );
+
+    if (result.modifiedCount === 1) {
+      res.status(200).json({ message: 'Channel status updated successfully.' });
+    } else {
+      res.status(404).json({ message: 'Channel not found or status unchanged.' });
+    }
+  } catch (error) {
+    console.error('Error updating channel status:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+app.get('/api/channels/:channelId', async (req, res) => {
+  const { channelId } = req.params;
+
+  try {
+    const channel = await channelsCollection.findOne({ _id: new ObjectId(channelId) });
+
+    if (!channel) {
+      return res.status(404).json({ message: "Channel not found" });
+    }
+
+    res.status(200).json(channel);
+  } catch (error) {
+    console.error("Error fetching channel:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+
+app.post('/api/channels/:channelId/messages',async (req, res) => {
+    const { channelId } = req.params;
+    const { text, fileUrl, fileType, fileName, senderId, senderName, timestamp } = req.body;
+
+    if (!senderId || !channelId) {
+        return res.status(400).json({ error: 'Missing senderId or channelId.' });
+    }
+
+    try {
+        const newMessage = {
+            channelId: new ObjectId(channelId),
+            senderId: new ObjectId(senderId),
+            senderName,
+            text: text || '',
+            fileUrl: fileUrl || null,
+            fileType: fileType || null,
+            fileName: fileName || null,
+            timestamp: timestamp ? new Date(timestamp) : new Date(),
+        };
+
+        const result = await channelessagesCollection.insertOne(newMessage);
+
+        if (result.insertedId) {
+            res.status(201).json({ message: { _id: result.insertedId, ...newMessage } });
+        } else {
+            throw new Error('Message insert failed');
+        }
+    } catch (err) {
+        console.error('Error saving message:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.get('/api/channels/:channelId/messages', async (req, res) => {
+    const { channelId } = req.params;
+    console.log(channelId)
+    try {
+
+        const messages = await channelessagesCollection
+            .find({ channelId: new ObjectId(channelId) })
+            .sort({ timestamp: 1 }) // sort by timestamp ascending
+            .toArray();
+
+        res.status(200).json({ messages });
+    } catch (err) {
+        console.error('Error fetching messages:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.put('/api/channels/:channelId/messages/:messageId', async (req, res) => {
+    const { channelId, messageId } = req.params;
+    const { text } = req.body;
+
+    if (!text || !text.trim()) {
+        return res.status(400).json({ error: 'Text is required' });
+    }
+
+    if (!ObjectId.isValid(channelId) || !ObjectId.isValid(messageId)) {
+        return res.status(400).json({ error: 'Invalid channelId or messageId' });
+    }
+
+    try {
+        const result = await channelessagesCollection.updateOne(
+            { _id: new ObjectId(messageId), channelId: new ObjectId(channelId) },
+            {
+                $set: {
+                    text: text.trim(),
+                    edited: true,
+                    editedAt: new Date()
+                }
+            }
+        );
+
+        if (result.modifiedCount === 1) {
+            const updatedMessage = await channelessagesCollection.findOne({ _id: new ObjectId(messageId) });
+            res.status(200).json(updatedMessage);
+        } else {
+            res.status(404).json({ error: 'Message not found or unchanged' });
+        }
+    } catch (err) {
+        console.error('Error updating message:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.delete('/api/channels/:channelId/messages/:messageId', async (req, res) => {
+    const { channelId, messageId } = req.params;
+
+    if (!ObjectId.isValid(channelId) || !ObjectId.isValid(messageId)) {
+        return res.status(400).json({ error: 'Invalid channelId or messageId' });
+    }
+
+    try {
+        const result = await channelessagesCollection.deleteOne({
+            _id: new ObjectId(messageId),
+            channelId: new ObjectId(channelId)
+        });
+
+        if (result.deletedCount === 1) {
+            res.status(200).json({ message: 'Message deleted successfully' });
+        } else {
+            res.status(404).json({ error: 'Message not found' });
+        }
+    } catch (err) {
+        console.error('Error deleting message:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+app.get("/books/nearby", async (req, res) => {
+  const { longitude, latitude, maxDistance = 4000 } = req.query;
+
+  if (!longitude || !latitude) {
+    return res.status(400).send({
+      success: false,
+      message: "Longitude and latitude are required.",
+    });
+  }
+
+  try {
+    const nearbyBooks = await bookCollections.aggregate([
+      {
+        $geoNear: {
+          near: {
+            type: "Point",
+            coordinates: [ parseFloat(longitude), parseFloat(latitude)],
+          },
+          distanceField: "distance",
+          maxDistance: parseFloat(maxDistance), // in meters
+          spherical: true,
+        },
+      },
+    ]).toArray();
+
+    res.send({
+      success: true,
+      data: nearbyBooks,
+    });
+
+    console.log("Nearby books found:", nearbyBooks);
+  } catch (error) {
+    console.error("Error fetching nearby books:", error);
+    res.status(500).send({
+      success: false,
+      message: "An unexpected error occurred.",
+    });
+  }
+});
+
+
+
 
 const server = app.listen(port, () => {
   console.log(`Server running http://localhost:${port}`);
