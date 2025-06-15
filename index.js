@@ -116,7 +116,7 @@ const noteCollections = db.collection("noteCollections");
 const organizationCollections = db.collection("organizationCollections");
 const homeCategoryCollection = db.collection("homeCategoryCollection");
 const adminAiPostCollections = db.collection("adminAiPostCollections");
-const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
+const JWT_SECRET = process.env.ACCESS_TOKEN_SECRET;
 const channelsCollection = db.collection("Channels");
 const channelessagesCollection = db.collection('channelMessages');
 // Create text index on opinions collection when the server starts
@@ -177,37 +177,47 @@ app.get("/search", async (req, res) => {
     let aiResult = "No AI result found";
     // ✅ Fetch AI-generated result from Hugging Face
     try {
-      const response = await fetch(
-        `https://api-inference.huggingface.co/models/mistralai/Mistral-7B-Instruct-v0.2`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${process.env.HUGGING_FACE_API_KEY}`,
-          },
-          body: JSON.stringify({
-            inputs: `Define in 2-3 brief sentences: ${searchQuery}`,
-          }),
-        }
-      );
-      // Check if the response is JSON
-      const contentType = response.headers.get("Content-Type");
-      if (contentType && contentType.includes("application/json")) {
-        const data = await response.json(); // Parse the response JSON
-        if (data && data[0] && data[0].generated_text) {
-          aiResult = data[0].generated_text; // Extract response text
-        } else {
-          aiResult = "No response from AI.";
-        }
-      } else {
-        const errorText = await response.text(); // Read error response
-        console.error("Error from Hugging Face API:", errorText);
-        aiResult = "Failed to fetch AI result. Please try again later.";
-      }
-    } catch (error) {
-      console.error("Hugging Face API Error:", error);
-      aiResult = "No AI result found"; // Fallback message
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.GMINI_API_KEY}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        contents: [{
+          parts: [{
+            text: `Define in 2-3 brief sentences: ${searchQuery}`
+          }]
+        }]
+      }),
     }
+  );
+
+  // Check if the response is JSON
+  const contentType = response.headers.get("Content-Type");
+  if (contentType && contentType.includes("application/json")) {
+    const data = await response.json(); // Parse the response JSON
+    
+    if (data && data.candidates && data.candidates[0] && 
+        data.candidates[0].content && data.candidates[0].content.parts && 
+        data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text) {
+      aiResult = data.candidates[0].content.parts[0].text; // Extract response text
+    } else if (data.error) {
+      console.error("Gemini API Error:", data.error);
+      aiResult = "Failed to fetch AI result. Please try again later.";
+    } else {
+      aiResult = "No response from AI.";
+    }
+  } else {
+    const errorText = await response.text(); // Read error response
+    console.error("Error from Gemini API:", errorText);
+    aiResult = "Failed to fetch AI result. Please try again later.";
+  }
+} catch (error) {
+  console.error("Gemini API Error:", error);
+  aiResult = "No AI result found"; // Fallback message
+}
 
     // ✅ Fetch website users
     try {
@@ -382,9 +392,17 @@ app.post("/users/login", async (req, res) => {
         .send({ success: false, message: "Invalid password" });
     }
 
-    const token = jwt.sign({ id: user._id, number: user.number }, JWT_SECRET, {
-      expiresIn: "30d",
-    });
+const token = jwt.sign(
+  { id: user._id, number: user.number },
+  JWT_SECRET,
+  {
+    expiresIn: 2592000 // 30 days in seconds
+  }
+);
+
+
+console.log("Generated Token:", token); // Log the full token for debugging
+
     res.json({ token });
   } catch (error) {
     console.error("Error during login:", error);
@@ -399,10 +417,8 @@ app.get("/profile", async (req, res) => {
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
-
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-
     const user = await usersCollections.findOne({ number: decoded.number });
 
     if (!user) {
@@ -432,6 +448,7 @@ app.get("/profile", async (req, res) => {
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
+
 
 // Upload PDF book endpoint
 app.post("/upload", async (req, res) => {
@@ -710,8 +727,8 @@ app.post("/forgot-password", async (req, res) => {
   if (!user) {
     return res.status(404).json({ error: "User not found." });
   }
-  const token = jwt.sign({ id: user._id }, "jwt_secret_key", {
-    expiresIn: "1d",
+  const token = jwt.sign({ id: user._id }, JWT_SECRET, {
+    expiresIn: "30d",
   });
   var transporter = nodemailer.createTransport({
     service: "gmail",
