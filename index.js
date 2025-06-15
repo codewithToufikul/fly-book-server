@@ -413,7 +413,7 @@ console.log("Generated Token:", token); // Log the full token for debugging
 // Get profile information for the logged-in user
 app.get("/profile", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-
+  
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
