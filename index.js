@@ -119,6 +119,7 @@ const adminAiPostCollections = db.collection("adminAiPostCollections");
 const JWT_SECRET = process.env.ACCESS_TOKEN_SECRET;
 const channelsCollection = db.collection("Channels");
 const channelessagesCollection = db.collection('channelMessages');
+const coursesCollection = db.collection('coursesCollection')
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -4115,6 +4116,124 @@ app.get("/books/nearby", async (req, res) => {
     });
   }
 });
+
+app.post('/api/courses', async (req, res) => {
+  const courseData = req.body;
+  // Save courseData to MongoDB
+  const savedCourse = await coursesCollection.insertOne(courseData);
+  res.status(201).json(savedCourse);
+});
+
+app.get('/api/courses', async (req, res) => {
+  try {
+    const courses = await coursesCollection.find().toArray();
+    res.status(200).json(courses);
+  } catch (error) {
+    console.error('Failed to fetch courses:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+
+app.post('/api/courses/:id/videos', async (req, res) => {
+  const courseId = req.params.id;
+  const videoData = req.body;
+
+  try {
+    const course = await coursesCollection.findOne({ _id: new ObjectId(courseId) });
+
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
+    // Add the video to the course's `videos` array (create array if it doesn't exist)
+    const updatedCourse = await coursesCollection.findOneAndUpdate(
+      { _id: new ObjectId(courseId) },
+      {
+        $push: {
+          videos: {
+            ...videoData
+          }
+        }
+      },
+      { returnDocument: 'after' } // return the updated course
+    );
+
+    res.status(200).json(updatedCourse.value);
+  } catch (error) {
+    console.error('Error adding video to course:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+app.delete('/api/courses/:id/videos/:videoIndex', async (req, res) => {
+  const courseId = req.params.id;
+  const videoIndex = parseInt(req.params.videoIndex);
+
+  try {
+    const course = await coursesCollection.findOne({ _id: new ObjectId(courseId) });
+
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
+    if (!Array.isArray(course.videos) || videoIndex < 0 || videoIndex >= course.videos.length) {
+      return res.status(400).json({ message: 'Invalid video index' });
+    }
+
+    // Remove the video at the specified index
+    course.videos.splice(videoIndex, 1);
+
+    // Update the course with the modified videos array
+    const updatedCourse = await coursesCollection.findOneAndUpdate(
+      { _id: new ObjectId(courseId) },
+      { $set: { videos: course.videos } },
+      { returnDocument: 'after' }
+    );
+
+    res.status(200).json(updatedCourse.value);
+  } catch (error) {
+    console.error('Error removing video from course:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.delete('/api/courses/:id', async (req, res) => {
+  const courseId = req.params.id;
+
+  try {
+    const result = await coursesCollection.deleteOne({ _id: new ObjectId(courseId) });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
+    res.status(200).json({ message: 'Course removed successfully' });
+  } catch (error) {
+    console.error('Error deleting course:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+app.get('/api/courses/:id', async (req, res) => {
+  const courseId = req.params.id;
+
+  try {
+    const course = await coursesCollection.findOne({ _id: new ObjectId(courseId) });
+
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
+    res.status(200).json(course);
+  } catch (error) {
+    console.error('Error fetching course:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 
 
 
