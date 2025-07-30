@@ -16,7 +16,7 @@ const { timeStamp } = require("console");
 const { translate } = require("@vitalets/google-translate-api");
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 // Middleware
 app.use(
   cors({
@@ -378,50 +378,78 @@ app.post("/users/register", async (req, res) => {
 app.post("/users/login", async (req, res) => {
   const { number, password } = req.body;
 
+  // Input validation
+  if (!number || !password) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Number and password are required" });
+  }
+
   try {
     const user = await usersCollections.findOne({ number });
+
     if (!user) {
       return res
         .status(401)
-        .send({ success: false, message: "User not found" });
+        .json({ success: false, message: "Invalid number or password" });
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res
         .status(401)
-        .send({ success: false, message: "Invalid password" });
+        .json({ success: false, message: "Invalid number or password" });
     }
 
-const token = jwt.sign(
-  { id: user._id, number: user.number },
-  JWT_SECRET,
-  {
-    expiresIn: 2592000 // 30 days in seconds
-  }
-);
-
-
-console.log("Generated Token:", token); // Log the full token for debugging
-
-    res.json({ token });
+    // Generate JWT token
+    const token = jwt.sign(
+      {
+        id: user._id.toString(),
+        number: user.number,
+      },
+      JWT_SECRET, // Always keep secret in env variables
+      {
+        expiresIn: "30d", // human-readable format
+      }
+    );
+    // Respond with token and basic user info (never password!)
+    res.status(200).json({
+      success: true,
+      message: "Login successful",
+      token,
+      user: {
+        id: user._id,
+        number: user.number,
+        name: user.name,
+      },
+    });
   } catch (error) {
-    console.error("Error during login:", error);
-    res.status(500).send({ success: false, message: "Internal server error" });
+    console.error("Login error:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+    });
   }
 });
 
 // Get profile information for the logged-in user
 app.get("/profile", async (req, res) => {
+  console.log("hit")
   const token = req.headers.authorization?.split(" ")[1];
-  
+  console.log(token)
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await usersCollections.findOne({ number: decoded.number });
+    console.log(decoded)
+    if (!decoded.number) {
+      return res.status(400).json({ error: "Invalid token payload." });
+    }
 
+    const user = await usersCollections.findOne({ number: decoded.number });
+    console.log(user)
     if (!user) {
       return res.status(404).json({ error: "User not found." });
     }
@@ -445,10 +473,11 @@ app.get("/profile", async (req, res) => {
       role: user.role,
     });
   } catch (error) {
-    console.error("JWT Verification Error:", error);
+    console.error("JWT Verification Error:", error.message);
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
+
 
 
 // Upload PDF book endpoint
