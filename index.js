@@ -16,7 +16,7 @@ const { timeStamp } = require("console");
 const { translate } = require("@vitalets/google-translate-api");
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 // Middleware
 app.use(
   cors({
@@ -434,22 +434,18 @@ app.post("/users/login", async (req, res) => {
 
 // Get profile information for the logged-in user
 app.get("/profile", async (req, res) => {
-  console.log("hit")
   const token = req.headers.authorization?.split(" ")[1];
-  console.log(token)
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    console.log(decoded)
     if (!decoded.number) {
       return res.status(400).json({ error: "Invalid token payload." });
     }
 
     const user = await usersCollections.findOne({ number: decoded.number });
-    console.log(user)
     if (!user) {
       return res.status(404).json({ error: "User not found." });
     }
@@ -2413,6 +2409,19 @@ app.get("/all-home-books", async (req, res) => {
   }
 });
 
+app.get("/all-home-post/:id", async (req, res) => {
+  const id = req.params.id;
+  console.log("Fetching post with ID:", id); // Debug log
+  try {
+    const post = await adminPostCollections.findOne({ _id: new ObjectId(id) });
+    res.send(post);
+  } catch (error) {
+    console.error("Error fetching post:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
 app.post("/admin-post/like", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
@@ -2463,9 +2472,58 @@ app.post("/admin-post/like", async (req, res) => {
   }
 });
 
+app.post("/admin-post/comment", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    const { postId, comment } = req.body;
+
+    if (!postId || !comment?.trim()) {
+      return res.status(400).json({ error: "Post ID and comment are required." });
+    }
+
+    const postObjectId = new ObjectId(postId);
+    const post = await adminPostCollections.findOne({ _id: postObjectId });
+
+    if (!post) {
+      return res.status(404).json({ error: "Post not found." });
+    }
+
+    const commentObj = {
+      id: Date.now(), // unique ID for frontend tracking
+      comment: comment.trim(),
+      userId: user._id,
+      userName: user.name || user.number,
+      userPhoto: user.profileImage || null,
+      createdAt: new Date().toISOString()
+    };
+
+    const result = await adminPostCollections.updateOne(
+      { _id: postObjectId },
+      { $push: { comments: { $each: [commentObj], $position: 0 } } } // add to top
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(500).json({ error: "Failed to add comment." });
+    }
+
+    res.status(200).json({ success: true, message: "Comment added successfully.", comment: commentObj });
+  } catch (error) {
+    console.error("Error submitting comment:", error);
+    res.status(401).json({ error: "Invalid or expired token." });
+  }
+});
+
+
 app.post("/admin-post/unlike", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-
+  console.log(token)
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
@@ -2474,7 +2532,7 @@ app.post("/admin-post/unlike", async (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await usersCollections.findOne({ number: decoded.number });
     const { postId } = req.body;
-
+    console.log(postId)
     if (!postId) {
       return res.status(400).json({ error: "Post ID is required." });
     }
@@ -3595,7 +3653,6 @@ app.delete("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
         message: "Organization not found or section couldn't be deleted",
       });
     }
-
     res.status(200).json({
       success: true,
       message: "Section deleted successfully",
