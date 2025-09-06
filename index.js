@@ -118,8 +118,16 @@ const homeCategoryCollection = db.collection("homeCategoryCollection");
 const adminAiPostCollections = db.collection("adminAiPostCollections");
 const JWT_SECRET = process.env.ACCESS_TOKEN_SECRET;
 const channelsCollection = db.collection("Channels");
-const channelessagesCollection = db.collection('channelMessages');
-const coursesCollection = db.collection('coursesCollection')
+const channelessagesCollection = db.collection("channelMessages");
+const coursesCollection = db.collection("coursesCollection");
+const sellerCollections = db.collection("sellerCollections");
+const productsCollection = db.collection("productsCollection");
+const productsCategories = db.collection("productsCategories");
+const cartsCollection = db.collection("cartsCollection");
+const ordersCollection = db.collection("ordersCollection");
+const addressesCollection = db.collection("addressesCollection");
+const withdrawsCollection = db.collection("withdrawsCollection");
+const bannersCollection = db.collection("bannersCollection");
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -178,47 +186,57 @@ app.get("/search", async (req, res) => {
     let aiResult = "No AI result found";
     // ✅ Fetch AI-generated result from Hugging Face
     try {
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.GMINI_API_KEY}`,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        contents: [{
-          parts: [{
-            text: `Define in 2-3 brief sentences: ${searchQuery}`
-          }]
-        }]
-      }),
-    }
-  );
+      const response = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.GMINI_API_KEY}`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: `Define in 2-3 brief sentences: ${searchQuery}`,
+                  },
+                ],
+              },
+            ],
+          }),
+        }
+      );
 
-  // Check if the response is JSON
-  const contentType = response.headers.get("Content-Type");
-  if (contentType && contentType.includes("application/json")) {
-    const data = await response.json(); // Parse the response JSON
-    
-    if (data && data.candidates && data.candidates[0] && 
-        data.candidates[0].content && data.candidates[0].content.parts && 
-        data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text) {
-      aiResult = data.candidates[0].content.parts[0].text; // Extract response text
-    } else if (data.error) {
-      console.error("Gemini API Error:", data.error);
-      aiResult = "Failed to fetch AI result. Please try again later.";
-    } else {
-      aiResult = "No response from AI.";
+      // Check if the response is JSON
+      const contentType = response.headers.get("Content-Type");
+      if (contentType && contentType.includes("application/json")) {
+        const data = await response.json(); // Parse the response JSON
+
+        if (
+          data &&
+          data.candidates &&
+          data.candidates[0] &&
+          data.candidates[0].content &&
+          data.candidates[0].content.parts &&
+          data.candidates[0].content.parts[0] &&
+          data.candidates[0].content.parts[0].text
+        ) {
+          aiResult = data.candidates[0].content.parts[0].text; // Extract response text
+        } else if (data.error) {
+          console.error("Gemini API Error:", data.error);
+          aiResult = "Failed to fetch AI result. Please try again later.";
+        } else {
+          aiResult = "No response from AI.";
+        }
+      } else {
+        const errorText = await response.text(); // Read error response
+        console.error("Error from Gemini API:", errorText);
+        aiResult = "Failed to fetch AI result. Please try again later.";
+      }
+    } catch (error) {
+      console.error("Gemini API Error:", error);
+      aiResult = "No AI result found"; // Fallback message
     }
-  } else {
-    const errorText = await response.text(); // Read error response
-    console.error("Error from Gemini API:", errorText);
-    aiResult = "Failed to fetch AI result. Please try again later.";
-  }
-} catch (error) {
-  console.error("Gemini API Error:", error);
-  aiResult = "No AI result found"; // Fallback message
-}
 
     // ✅ Fetch website users
     try {
@@ -310,7 +328,7 @@ app.get("/search", async (req, res) => {
 app.post("/users/register", async (req, res) => {
   try {
     const { name, email, number, password, userLocation } = req.body;
-
+    console.log(userLocation)
     // Check if user already exists
     const existingUser = await usersCollections.findOne({ number });
     if (existingUser) {
@@ -473,8 +491,6 @@ app.get("/profile", async (req, res) => {
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
-
-
 
 // Upload PDF book endpoint
 app.post("/upload", async (req, res) => {
@@ -2450,7 +2466,6 @@ app.get("/all-home-post/:id", async (req, res) => {
   }
 });
 
-
 app.post("/admin-post/like", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
@@ -2514,7 +2529,9 @@ app.post("/admin-post/comment", async (req, res) => {
     const { postId, comment } = req.body;
 
     if (!postId || !comment?.trim()) {
-      return res.status(400).json({ error: "Post ID and comment are required." });
+      return res
+        .status(400)
+        .json({ error: "Post ID and comment are required." });
     }
 
     const postObjectId = new ObjectId(postId);
@@ -2530,7 +2547,7 @@ app.post("/admin-post/comment", async (req, res) => {
       userId: user._id,
       userName: user.name || user.number,
       userPhoto: user.profileImage || null,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     };
 
     const result = await adminPostCollections.updateOne(
@@ -2542,17 +2559,20 @@ app.post("/admin-post/comment", async (req, res) => {
       return res.status(500).json({ error: "Failed to add comment." });
     }
 
-    res.status(200).json({ success: true, message: "Comment added successfully.", comment: commentObj });
+    res.status(200).json({
+      success: true,
+      message: "Comment added successfully.",
+      comment: commentObj,
+    });
   } catch (error) {
     console.error("Error submitting comment:", error);
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
 
-
 app.post("/admin-post/unlike", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-  console.log(token)
+  console.log(token);
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
@@ -2561,7 +2581,7 @@ app.post("/admin-post/unlike", async (req, res) => {
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await usersCollections.findOne({ number: decoded.number });
     const { postId } = req.body;
-    console.log(postId)
+    console.log(postId);
     if (!postId) {
       return res.status(400).json({ error: "Post ID is required." });
     }
@@ -3999,31 +4019,35 @@ app.get("/social-organization", async (req, res) => {
   }
 });
 
-
-
-  // POST /api/channels
-  app.post('/api/channels', async (req, res) => {
-    try {
-      const channelData = req.body;
-
-      // Optionally validate required fields
-      if (!channelData.name || !channelData.creator) {
-        return res.status(400).json({ message: "Name and creator are required." });
-      }
-
-      const result = await channelsCollection.insertOne(channelData);
-      res.status(201).json({ message: 'Channel created successfully', channelId: result.insertedId });
-    } catch (error) {
-      console.error("Error inserting channel:", error);
-      res.status(500).json({ message: "Internal server error" });
-    }
-  });
-
-
-  // GET /api/channels
-app.get('/api/channels', async (req, res) => {
+// POST /api/channels
+app.post("/api/channels", async (req, res) => {
   try {
-    const channels = await channelsCollection.find({status: "approved"}).toArray();
+    const channelData = req.body;
+
+    // Optionally validate required fields
+    if (!channelData.name || !channelData.creator) {
+      return res
+        .status(400)
+        .json({ message: "Name and creator are required." });
+    }
+
+    const result = await channelsCollection.insertOne(channelData);
+    res.status(201).json({
+      message: "Channel created successfully",
+      channelId: result.insertedId,
+    });
+  } catch (error) {
+    console.error("Error inserting channel:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// GET /api/channels
+app.get("/api/channels", async (req, res) => {
+  try {
+    const channels = await channelsCollection
+      .find({ status: "approved" })
+      .toArray();
     res.status(200).json(channels);
   } catch (error) {
     console.error("Error fetching channels:", error);
@@ -4031,9 +4055,9 @@ app.get('/api/channels', async (req, res) => {
   }
 });
 
-app.get('/api/channels/admin', async (req, res) => {
+app.get("/api/channels/admin", async (req, res) => {
   try {
-    console.log('hit')
+    console.log("hit");
     const channels = await channelsCollection.find({}).toArray();
     res.status(200).json(channels);
   } catch (error) {
@@ -4042,7 +4066,7 @@ app.get('/api/channels/admin', async (req, res) => {
   }
 });
 
-app.patch('/api/channels/:channelId/status', async (req, res) => {
+app.patch("/api/channels/:channelId/status", async (req, res) => {
   const { channelId } = req.params;
   const { status } = req.body;
 
@@ -4053,22 +4077,25 @@ app.patch('/api/channels/:channelId/status', async (req, res) => {
     );
 
     if (result.modifiedCount === 1) {
-      res.status(200).json({ message: 'Channel status updated successfully.' });
+      res.status(200).json({ message: "Channel status updated successfully." });
     } else {
-      res.status(404).json({ message: 'Channel not found or status unchanged.' });
+      res
+        .status(404)
+        .json({ message: "Channel not found or status unchanged." });
     }
   } catch (error) {
-    console.error('Error updating channel status:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    console.error("Error updating channel status:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
 
-
-app.get('/api/channels/:channelId', async (req, res) => {
+app.get("/api/channels/:channelId", async (req, res) => {
   const { channelId } = req.params;
 
   try {
-    const channel = await channelsCollection.findOne({ _id: new ObjectId(channelId) });
+    const channel = await channelsCollection.findOne({
+      _id: new ObjectId(channelId),
+    });
 
     if (!channel) {
       return res.status(404).json({ message: "Channel not found" });
@@ -4081,140 +4108,142 @@ app.get('/api/channels/:channelId', async (req, res) => {
   }
 });
 
+app.post("/api/channels/:channelId/messages", async (req, res) => {
+  const { channelId } = req.params;
+  const { text, fileUrl, fileType, fileName, senderId, senderName, timestamp } =
+    req.body;
 
-app.post('/api/channels/:channelId/messages',async (req, res) => {
-    const { channelId } = req.params;
-    const { text, fileUrl, fileType, fileName, senderId, senderName, timestamp } = req.body;
+  if (!senderId || !channelId) {
+    return res.status(400).json({ error: "Missing senderId or channelId." });
+  }
 
-    if (!senderId || !channelId) {
-        return res.status(400).json({ error: 'Missing senderId or channelId.' });
+  try {
+    const newMessage = {
+      channelId: new ObjectId(channelId),
+      senderId: new ObjectId(senderId),
+      senderName,
+      text: text || "",
+      fileUrl: fileUrl || null,
+      fileType: fileType || null,
+      fileName: fileName || null,
+      timestamp: timestamp ? new Date(timestamp) : new Date(),
+    };
+
+    const result = await channelessagesCollection.insertOne(newMessage);
+
+    if (result.insertedId) {
+      res
+        .status(201)
+        .json({ message: { _id: result.insertedId, ...newMessage } });
+    } else {
+      throw new Error("Message insert failed");
     }
-
-    try {
-        const newMessage = {
-            channelId: new ObjectId(channelId),
-            senderId: new ObjectId(senderId),
-            senderName,
-            text: text || '',
-            fileUrl: fileUrl || null,
-            fileType: fileType || null,
-            fileName: fileName || null,
-            timestamp: timestamp ? new Date(timestamp) : new Date(),
-        };
-
-        const result = await channelessagesCollection.insertOne(newMessage);
-
-        if (result.insertedId) {
-            res.status(201).json({ message: { _id: result.insertedId, ...newMessage } });
-        } else {
-            throw new Error('Message insert failed');
-        }
-    } catch (err) {
-        console.error('Error saving message:', err);
-        res.status(500).json({ error: 'Internal server error' });
-    }
+  } catch (err) {
+    console.error("Error saving message:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-app.get('/api/channels/:channelId/messages', async (req, res) => {
-    const { channelId } = req.params;
-    console.log(channelId)
-    try {
+app.get("/api/channels/:channelId/messages", async (req, res) => {
+  const { channelId } = req.params;
+  console.log(channelId);
+  try {
+    const messages = await channelessagesCollection
+      .find({ channelId: new ObjectId(channelId) })
+      .sort({ timestamp: 1 }) // sort by timestamp ascending
+      .toArray();
 
-        const messages = await channelessagesCollection
-            .find({ channelId: new ObjectId(channelId) })
-            .sort({ timestamp: 1 }) // sort by timestamp ascending
-            .toArray();
-
-        res.status(200).json({ messages });
-    } catch (err) {
-        console.error('Error fetching messages:', err);
-        res.status(500).json({ error: 'Internal server error' });
-    }
+    res.status(200).json({ messages });
+  } catch (err) {
+    console.error("Error fetching messages:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-app.put('/api/channels/:channelId/messages/:messageId', async (req, res) => {
-    const { channelId, messageId } = req.params;
-    const { text } = req.body;
+app.put("/api/channels/:channelId/messages/:messageId", async (req, res) => {
+  const { channelId, messageId } = req.params;
+  const { text } = req.body;
 
-    if (!text || !text.trim()) {
-        return res.status(400).json({ error: 'Text is required' });
+  if (!text || !text.trim()) {
+    return res.status(400).json({ error: "Text is required" });
+  }
+
+  if (!ObjectId.isValid(channelId) || !ObjectId.isValid(messageId)) {
+    return res.status(400).json({ error: "Invalid channelId or messageId" });
+  }
+
+  try {
+    const result = await channelessagesCollection.updateOne(
+      { _id: new ObjectId(messageId), channelId: new ObjectId(channelId) },
+      {
+        $set: {
+          text: text.trim(),
+          edited: true,
+          editedAt: new Date(),
+        },
+      }
+    );
+
+    if (result.modifiedCount === 1) {
+      const updatedMessage = await channelessagesCollection.findOne({
+        _id: new ObjectId(messageId),
+      });
+      res.status(200).json(updatedMessage);
+    } else {
+      res.status(404).json({ error: "Message not found or unchanged" });
     }
-
-    if (!ObjectId.isValid(channelId) || !ObjectId.isValid(messageId)) {
-        return res.status(400).json({ error: 'Invalid channelId or messageId' });
-    }
-
-    try {
-        const result = await channelessagesCollection.updateOne(
-            { _id: new ObjectId(messageId), channelId: new ObjectId(channelId) },
-            {
-                $set: {
-                    text: text.trim(),
-                    edited: true,
-                    editedAt: new Date()
-                }
-            }
-        );
-
-        if (result.modifiedCount === 1) {
-            const updatedMessage = await channelessagesCollection.findOne({ _id: new ObjectId(messageId) });
-            res.status(200).json(updatedMessage);
-        } else {
-            res.status(404).json({ error: 'Message not found or unchanged' });
-        }
-    } catch (err) {
-        console.error('Error updating message:', err);
-        res.status(500).json({ error: 'Internal server error' });
-    }
+  } catch (err) {
+    console.error("Error updating message:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
-app.get('/api/channels/:channelId/messages/:messageId', async (req, res) => {
-    const { channelId, messageId } = req.params;
+app.get("/api/channels/:channelId/messages/:messageId", async (req, res) => {
+  const { channelId, messageId } = req.params;
 
-    if (!ObjectId.isValid(channelId) || !ObjectId.isValid(messageId)) {
-        return res.status(400).json({ error: 'Invalid channelId or messageId' });
+  if (!ObjectId.isValid(channelId) || !ObjectId.isValid(messageId)) {
+    return res.status(400).json({ error: "Invalid channelId or messageId" });
+  }
+
+  try {
+    const message = await channelessagesCollection.findOne({
+      _id: new ObjectId(messageId),
+      channelId: new ObjectId(channelId),
+    });
+
+    if (!message) {
+      return res.status(404).json({ error: "Message not found" });
     }
 
-    try {
-        const message = await channelessagesCollection.findOne({
-            _id: new ObjectId(messageId),
-            channelId: new ObjectId(channelId)
-        });
-
-        if (!message) {
-            return res.status(404).json({ error: 'Message not found' });
-        }
-
-        res.status(200).json({ message });
-    } catch (err) {
-        console.error('Error fetching message:', err);
-        res.status(500).json({ error: 'Internal server error' });
-    }
+    res.status(200).json({ message });
+  } catch (err) {
+    console.error("Error fetching message:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
+app.delete("/api/channels/:channelId/messages/:messageId", async (req, res) => {
+  const { channelId, messageId } = req.params;
 
-app.delete('/api/channels/:channelId/messages/:messageId', async (req, res) => {
-    const { channelId, messageId } = req.params;
+  if (!ObjectId.isValid(channelId) || !ObjectId.isValid(messageId)) {
+    return res.status(400).json({ error: "Invalid channelId or messageId" });
+  }
 
-    if (!ObjectId.isValid(channelId) || !ObjectId.isValid(messageId)) {
-        return res.status(400).json({ error: 'Invalid channelId or messageId' });
+  try {
+    const result = await channelessagesCollection.deleteOne({
+      _id: new ObjectId(messageId),
+      channelId: new ObjectId(channelId),
+    });
+
+    if (result.deletedCount === 1) {
+      res.status(200).json({ message: "Message deleted successfully" });
+    } else {
+      res.status(404).json({ error: "Message not found" });
     }
-
-    try {
-        const result = await channelessagesCollection.deleteOne({
-            _id: new ObjectId(messageId),
-            channelId: new ObjectId(channelId)
-        });
-
-        if (result.deletedCount === 1) {
-            res.status(200).json({ message: 'Message deleted successfully' });
-        } else {
-            res.status(404).json({ error: 'Message not found' });
-        }
-    } catch (err) {
-        console.error('Error deleting message:', err);
-        res.status(500).json({ error: 'Internal server error' });
-    }
+  } catch (err) {
+    console.error("Error deleting message:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 app.get("/books/nearby", async (req, res) => {
@@ -4228,19 +4257,21 @@ app.get("/books/nearby", async (req, res) => {
   }
 
   try {
-    const nearbyBooks = await bookCollections.aggregate([
-      {
-        $geoNear: {
-          near: {
-            type: "Point",
-            coordinates: [ parseFloat(longitude), parseFloat(latitude)],
+    const nearbyBooks = await bookCollections
+      .aggregate([
+        {
+          $geoNear: {
+            near: {
+              type: "Point",
+              coordinates: [parseFloat(longitude), parseFloat(latitude)],
+            },
+            distanceField: "distance",
+            maxDistance: parseFloat(maxDistance), // in meters
+            spherical: true,
           },
-          distanceField: "distance",
-          maxDistance: parseFloat(maxDistance), // in meters
-          spherical: true,
         },
-      },
-    ]).toArray();
+      ])
+      .toArray();
 
     res.send({
       success: true,
@@ -4257,33 +4288,34 @@ app.get("/books/nearby", async (req, res) => {
   }
 });
 
-app.post('/api/courses', async (req, res) => {
+app.post("/api/courses", async (req, res) => {
   const courseData = req.body;
   // Save courseData to MongoDB
   const savedCourse = await coursesCollection.insertOne(courseData);
   res.status(201).json(savedCourse);
 });
 
-app.get('/api/courses', async (req, res) => {
+app.get("/api/courses", async (req, res) => {
   try {
     const courses = await coursesCollection.find().toArray();
     res.status(200).json(courses);
   } catch (error) {
-    console.error('Failed to fetch courses:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    console.error("Failed to fetch courses:", error);
+    res.status(500).json({ error: "Internal Server Error" });
   }
 });
 
-
-app.post('/api/courses/:id/videos', async (req, res) => {
+app.post("/api/courses/:id/videos", async (req, res) => {
   const courseId = req.params.id;
   const videoData = req.body;
 
   try {
-    const course = await coursesCollection.findOne({ _id: new ObjectId(courseId) });
+    const course = await coursesCollection.findOne({
+      _id: new ObjectId(courseId),
+    });
 
     if (!course) {
-      return res.status(404).json({ message: 'Course not found' });
+      return res.status(404).json({ message: "Course not found" });
     }
 
     // Add the video to the course's `videos` array (create array if it doesn't exist)
@@ -4292,34 +4324,39 @@ app.post('/api/courses/:id/videos', async (req, res) => {
       {
         $push: {
           videos: {
-            ...videoData
-          }
-        }
+            ...videoData,
+          },
+        },
       },
-      { returnDocument: 'after' } // return the updated course
+      { returnDocument: "after" } // return the updated course
     );
 
     res.status(200).json(updatedCourse.value);
   } catch (error) {
-    console.error('Error adding video to course:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    console.error("Error adding video to course:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
 
-
-app.delete('/api/courses/:id/videos/:videoIndex', async (req, res) => {
+app.delete("/api/courses/:id/videos/:videoIndex", async (req, res) => {
   const courseId = req.params.id;
   const videoIndex = parseInt(req.params.videoIndex);
 
   try {
-    const course = await coursesCollection.findOne({ _id: new ObjectId(courseId) });
+    const course = await coursesCollection.findOne({
+      _id: new ObjectId(courseId),
+    });
 
     if (!course) {
-      return res.status(404).json({ message: 'Course not found' });
+      return res.status(404).json({ message: "Course not found" });
     }
 
-    if (!Array.isArray(course.videos) || videoIndex < 0 || videoIndex >= course.videos.length) {
-      return res.status(400).json({ message: 'Invalid video index' });
+    if (
+      !Array.isArray(course.videos) ||
+      videoIndex < 0 ||
+      videoIndex >= course.videos.length
+    ) {
+      return res.status(400).json({ message: "Invalid video index" });
     }
 
     // Remove the video at the specified index
@@ -4329,53 +4366,1844 @@ app.delete('/api/courses/:id/videos/:videoIndex', async (req, res) => {
     const updatedCourse = await coursesCollection.findOneAndUpdate(
       { _id: new ObjectId(courseId) },
       { $set: { videos: course.videos } },
-      { returnDocument: 'after' }
+      { returnDocument: "after" }
     );
 
     res.status(200).json(updatedCourse.value);
   } catch (error) {
-    console.error('Error removing video from course:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    console.error("Error removing video from course:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
 
-app.delete('/api/courses/:id', async (req, res) => {
+app.delete("/api/courses/:id", async (req, res) => {
   const courseId = req.params.id;
 
   try {
-    const result = await coursesCollection.deleteOne({ _id: new ObjectId(courseId) });
+    const result = await coursesCollection.deleteOne({
+      _id: new ObjectId(courseId),
+    });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({ message: 'Course not found' });
+      return res.status(404).json({ message: "Course not found" });
     }
 
-    res.status(200).json({ message: 'Course removed successfully' });
+    res.status(200).json({ message: "Course removed successfully" });
   } catch (error) {
-    console.error('Error deleting course:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    console.error("Error deleting course:", error);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
 
-
-app.get('/api/courses/:id', async (req, res) => {
+app.get("/api/courses/:id", async (req, res) => {
   const courseId = req.params.id;
 
   try {
-    const course = await coursesCollection.findOne({ _id: new ObjectId(courseId) });
+    const course = await coursesCollection.findOne({
+      _id: new ObjectId(courseId),
+    });
 
     if (!course) {
-      return res.status(404).json({ message: 'Course not found' });
+      return res.status(404).json({ message: "Course not found" });
     }
 
     res.status(200).json(course);
   } catch (error) {
-    console.error('Error fetching course:', error);
-    res.status(500).json({ message: 'Internal server error' });
+    console.error("Error fetching course:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.post("/market-seller-request", async (req, res) => {
+  const { sellerData } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const userId = user._id;
+
+    // sellerData + extra fields
+    const newSeller = {
+      ...sellerData,
+      userId, // কে রিকোয়েস্ট করলো সেটা ট্র্যাক করার জন্য
+      status: "pending",
+      createdAt: new Date(),
+    };
+
+    const result = await sellerCollections.insertOne(newSeller);
+
+    res.status(201).json({
+      message: "Seller request submitted successfully.",
+      sellerId: result.insertedId,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/get-market-product", async (req, res) => {
+  try {
+    const products = await productsCollection.find().toArray();
+    res.status(200).json({
+      success: true,
+      products,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/get-product/:productId", async (req, res) => {
+  const { productId } = req.params; // ✅ get from params
+  try {
+    const product = await productsCollection.findOne({
+      _id: new ObjectId(productId),
+    }); // ✅ query correctly
+    if (!product) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Product not found" });
+    }
+    res.status(200).json({
+      success: true,
+      product,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/get-product-categories", async (req, res) => {
+  try {
+    const categories = await productsCategories.find().toArray();
+    res.status(200).json({
+      success: true,
+      categories: categories,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/get-category/:categoryId", async (req, res) => {
+  const { categoryId } = req.params;
+  try {
+    const category = await productsCategories.findOne({
+      _id: new ObjectId(categoryId),
+    });
+    res.status(200).json({
+      success: true,
+      category: category,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/get-product-category", async (req, res) => {
+  const { category } = req.query; // ✅ GET request-এ query ব্যবহার করুন
+
+  try {
+    const products = await productsCollection.find({ category }).toArray();
+    res.status(200).json({
+      success: true,
+      products,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/search-products", async (req, res) => {
+  try {
+    const { q } = req.query; // search keyword
+
+    if (!q || q.trim() === "") {
+      return res
+        .status(400)
+        .json({ success: false, message: "Search query required" });
+    }
+
+    // MongoDB regex search
+    const products = await productsCollection
+      .find({
+        $or: [
+          { title: { $regex: q, $options: "i" } }, // title match
+          { description: { $regex: q, $options: "i" } }, // description match
+          { category: { $regex: q, $options: "i" } }, // category match
+        ],
+      })
+      .limit(50) // optional: max 50 results
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      products,
+    });
+  } catch (error) {
+    console.error("Search error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// fetch user's cart
+app.get("/cart/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  if (!userId) {
+    return res
+      .status(400)
+      .json({ success: false, message: "User ID is required" });
+  }
+
+  try {
+    const cart = await cartsCollection.findOne({ userId });
+
+    if (!cart) {
+      return res.status(200).json({ success: true, items: [] }); // empty cart
+    }
+
+    res.status(200).json({ success: true, items: cart.items });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Add or update product in cart
+app.post("/cart/add", async (req, res) => {
+  const { userId, product, quantity } = req.body;
+  if (!userId || !product || !quantity) {
+    return res.status(400).json({ success: false, message: "Missing data" });
+  }
+
+  try {
+    // Check if user already has a cart
+    const cart = await cartsCollection.findOne({ userId });
+
+    if (cart) {
+      // Check if product already exists in cart
+      const existingItem = cart.items.find(
+        (item) => item.productId === product._id
+      );
+
+      if (existingItem) {
+        // Update quantity
+        await cartsCollection.updateOne(
+          { userId, "items.productId": product._id },
+          { $inc: { "items.$.quantity": quantity } }
+        );
+      } else {
+        // Add new product
+        await cartsCollection.updateOne(
+          { userId },
+          { $push: { items: { ...product, productId: product._id, quantity } } }
+        );
+      }
+    } else {
+      // Create a new cart for the user
+      await cartsCollection.insertOne({
+        userId,
+        items: [{ ...product, productId: product._id, quantity }],
+      });
+    }
+
+    res.status(200).json({ success: true, message: "Product added to cart" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// PATCH /cart/update
+app.patch("/cart/update", async (req, res) => {
+  const { userId, productId, quantity } = req.body;
+
+  if (!userId || !productId || quantity === undefined) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Missing required fields" });
+  }
+
+  try {
+    const cart = await cartsCollection.findOne({ userId });
+
+    if (!cart) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Cart not found" });
+    }
+
+    // Update quantity of the product
+    const updatedItems = cart.items.map((item) =>
+      item?._id.toString() === productId
+        ? { ...item, quantity: Number(quantity) }
+        : item
+    );
+
+    await cartsCollection.updateOne(
+      { userId },
+      { $set: { items: updatedItems } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Quantity updated",
+      items: updatedItems,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// DELETE /cart/remove/:productId?userId=...
+app.delete("/cart/remove/:productId", async (req, res) => {
+  const { productId } = req.params;
+  const { userId } = req.query;
+  if (!userId || !productId) {
+    return res
+      .status(400)
+      .json({ success: false, message: "Missing required fields" });
+  }
+
+  try {
+    const cart = await cartsCollection.findOne({ userId });
+
+    if (!cart) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Cart not found" });
+    }
+
+    // Remove the product
+    const updatedItems = cart.items.filter(
+      (item) => item?._id?.toString() !== productId
+    );
+
+    await cartsCollection.updateOne(
+      { userId },
+      { $set: { items: updatedItems } }
+    );
+
+    res
+      .status(200)
+      .json({ success: true, message: "Item removed", items: updatedItems });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.post("/orders/create", async (req, res) => {
+  try {
+    const {
+      userId,
+      items,
+      shippingInfo,
+      totalAmount,
+      subtotal,
+      deliveryCharges,
+      totalProducts,
+      deliveryChargePerProduct,
+      paymentStatus,
+      orderSource,
+    } = req.body;
+
+    if (!items || items.length === 0) {
+      return res
+        .status(400)
+        .json({ success: false, message: "No items in order" });
+    }
+
+    const newOrder = {
+      userId,
+      items,
+      shippingInfo,
+      totalAmount,
+      subtotal,
+      deliveryCharges,
+      totalProducts,
+      deliveryChargePerProduct,
+      paymentStatus,
+      orderStatus: "pending",
+      orderSource,
+      createdAt: new Date(),
+    };
+
+    // 1️⃣ Order create
+    const result = await ordersCollection.insertOne(newOrder);
+
+    // 2️⃣ Cart before clear
+    const cartBefore = await cartsCollection.findOne({ userId });
+
+    const cartBeforeObjId = await cartsCollection.findOne({
+      userId: new ObjectId(userId),
+    });
+
+    // 3️⃣ Try clear cart (handle both string & ObjectId cases)
+    const clearResult = await cartsCollection.updateOne(
+      {
+        $or: [
+          { userId: userId }, // যদি string হিসেবে save থাকে
+          { userId: new ObjectId(userId) }, // যদি ObjectId হিসেবে save থাকে
+        ],
+      },
+      { $set: { items: [] } }
+    );
+
+    // 4️⃣ Cart after clear
+    const cartAfter = await cartsCollection.findOne({ userId });
+
+    res.status(201).json({
+      success: true,
+      message: "Order created successfully",
+      orderId: result.insertedId,
+    });
+  } catch (error) {
+    console.error("❌ Error in /orders/create:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.patch("/payments/:orderId/confirm", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+
+    const result = await ordersCollection.updateOne(
+      { _id: new ObjectId(orderId) },
+      { $set: { paymentStatus: "confirmed", confirmedAt: new Date() } }
+    );
+
+    if (result.modifiedCount > 0) {
+      res.json({ success: true, message: "Order confirmed successfully" });
+    } else {
+      res.status(404).json({ success: false, message: "Order not found" });
+    }
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// সব pending order আনবে ইউজারের জন্য
+app.get("/payments/pending/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const orders = await ordersCollection
+      .find({
+        userId,
+        paymentStatus: "pending",
+      })
+      .toArray();
+
+    res.json({ success: true, orders });
+  } catch (error) {
+    console.error("❌ Error fetching pending orders:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.get("/payments/confirmed/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const orders = await ordersCollection
+      .find({
+        userId,
+        paymentStatus: "confirmed",
+      })
+      .toArray();
+
+    res.json({ success: true, orders });
+  } catch (error) {
+    console.error("❌ Error fetching pending orders:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Order confirm করার endpoint
+app.patch("/payments/confirm/:orderId", async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const result = await ordersCollection.updateOne(
+      { _id: new ObjectId(orderId) },
+      { $set: { paymentStatus: "confirmed" } }
+    );
+
+    res.json({ success: true, message: "Order confirmed", result });
+  } catch (error) {
+    console.error("❌ Error confirming order:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.post("/addresses", async (req, res) => {
+  try {
+    const { addressData } = req.body;
+
+    if (
+      !addressData ||
+      !addressData.type ||
+      !addressData.fullAddress ||
+      !addressData.phone
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, message: "All fields are required" });
+    }
+
+    // যদি isDefault true হয়, তাহলে আগের default address false করে দাও
+    if (addressData.isDefault) {
+      await addressesCollection.updateMany(
+        { userId: addressData.userId, isDefault: true },
+        { $set: { isDefault: false } }
+      );
+    }
+
+    const newAddress = {
+      ...addressData,
+      isDefault: !!addressData.isDefault,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await addressesCollection.insertOne(newAddress);
+
+    res.status(201).json({
+      success: true,
+      message: "Address added successfully",
+      address: { ...newAddress, _id: result.insertedId },
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.put("/addresses/:id", async (req, res) => {
+  try {
+    const addressId = req.params.id;
+    const { addressData } = req.body;
+
+    if (
+      !addressData ||
+      !addressData.type ||
+      !addressData.fullAddress ||
+      !addressData.phone
+    ) {
+      return res
+        .status(400)
+        .json({ success: false, message: "All fields are required" });
+    }
+
+    // যদি isDefault true হয়, তাহলে আগের default address false করে দাও
+    if (addressData.isDefault) {
+      await addressesCollection.updateMany(
+        { userId: addressData.userId, isDefault: true },
+        { $set: { isDefault: false } }
+      );
+    }
+
+    const updated = await addressesCollection.findOneAndUpdate(
+      { _id: new ObjectId(addressId) },
+      {
+        $set: {
+          type: addressData.type,
+          fullAddress: addressData.fullAddress,
+          phone: addressData.phone,
+          isDefault: !!addressData.isDefault,
+          updatedAt: new Date(),
+        },
+      },
+      { returnDocument: "after" }
+    );
+
+    if (!updated.value) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Address not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Address updated successfully",
+      address: updated.value,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.get("/addresses/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    if (!userId) {
+      return res
+        .status(400)
+        .json({ success: false, message: "User ID is required" });
+    }
+
+    const addresses = await addressesCollection
+      .find({ userId: userId })
+      .sort({ isDefault: -1, createdAt: -1 }) // Default address আগে দেখাবে
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      addresses,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.delete("/addresses/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!id) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Address ID is required" });
+    }
+
+    const result = await addressesCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Address not found" });
+    }
+
+    res
+      .status(200)
+      .json({ success: true, message: "Address deleted successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.get("/seller-requests", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "No token provided" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const requests = await sellerCollections.find().sort({createdAt: -1}).toArray();
+    res.status(200).json({ success: true, requests });
+  } catch (error) {
+    console.error("Error fetching seller requests:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// Approve or Reject Seller Request
+app.patch("/seller-requests/:id", async (req, res) => {
+  const { id } = req.params;
+  const { status } = req.body; // "approved" | "rejected"
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) return res.status(401).json({ error: "No token provided" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    const result = await sellerCollections.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status } }
+    );
+
+    res.status(200).json({
+      message: `Seller request ${status} successfully.`,
+      result,
+    });
+  } catch (error) {
+    console.error("Error updating seller request:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// get all approved sellers
+app.get("/sellers", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    if (user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. Admin only." });
+    }
+
+    const sellers = await sellerCollections
+      .find({ status: "approved" }) // শুধু approved seller দেখাবে
+      .toArray();
+
+    res.status(200).json({ success: true, sellers });
+  } catch (error) {
+    console.error("Error fetching sellers:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// suspend seller
+app.patch("/sellers/:id/suspend", async (req, res) => {
+  const { id } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    if (user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. Admin only." });
+    }
+
+    const result = await sellerCollections.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status: "suspended" } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res
+        .status(404)
+        .json({ error: "Seller not found or already suspended." });
+    }
+
+    res
+      .status(200)
+      .json({ success: true, message: "Seller suspended successfully." });
+  } catch (error) {
+    console.error("Error suspending seller:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/sellers/:id", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const seller = await sellerCollections.findOne({ _id: new ObjectId(id) });
+    if (!seller) {
+      return res.status(404).json({ error: "Seller not found." });
+    }
+    res.status(200).json({ success: true, seller });
+  } catch (error) {
+    console.error("Error fetching seller:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// GET /sellers/check/:userId
+app.get("/sellers/check/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    // ObjectId conversion
+    const seller = await sellerCollections.findOne({
+      userId: new ObjectId(userId),
+      status: "approved", // শুধুমাত্র approved seller খুঁজবে
+    });
+
+    if (!seller) {
+      return res.json({ isSeller: false });
+    }
+
+    // seller found
+    res.json({ isSeller: true, seller });
+  } catch (error) {
+    console.error("Error checking seller:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// GET /seller-request/:userId
+app.get("/seller-request/:userId", async (req, res) => {
+  const { userId } = req.params;
+
+  try {
+    const request = await sellerCollections.findOne({
+      userId: new ObjectId(userId),
+    });
+    if (request) {
+      res.status(200).json({ success: true, request });
+    } else {
+      res.status(200).json({ success: true, request: null }); // no request found
+    }
+  } catch (error) {
+    console.error("Error fetching seller request:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.post("/add-seller-product", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    const product = req.body;
+    const result = await productsCollection.insertOne(product);
+    res.status(201).json({ success: true, productId: result.insertedId });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.get("/get-seller-products", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Fetch all products for that vendor
+    const products = await productsCollection
+      .find({ vendorId: user._id.toString() })
+      .toArray();
+
+    res.status(200).json({ success: true, products });
+  } catch (error) {
+    console.error("Error fetching seller products:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.delete("/delete-product/:id", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { id } = req.params;
+
+    // Delete only if the product belongs to this vendor
+    const result = await productsCollection.deleteOne({
+      _id: new ObjectId(id),
+      vendorId: user._id.toString(), // if stored as string
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found or not authorized",
+      });
+    }
+
+    res
+      .status(200)
+      .json({ success: true, message: "Product deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting product:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// ✅ Update a product by ID
+app.put("/update-product/:id", async (req, res) => {
+  const { id } = req.params;
+  const updatedData = req.body;
+
+  try {
+    const result = await productsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Product updated successfully",
+    });
+  } catch (error) {
+    console.error("Error updating product:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+// Get all orders for a specific seller
+app.get("/seller/orders/:vendorId", async (req, res) => {
+  const { vendorId } = req.params;
+
+  try {
+    const orders = await ordersCollection
+      .find({
+        items: { $elemMatch: { vendorId: vendorId } }, // ✅ Ensure seller's items exist
+      })
+      .toArray();
+
+    console.log("Found orders:", orders.length);
+    res.status(200).json({ success: true, orders });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Update status of a specific item in an order
+app.put("/seller/orders/:orderId/item/:itemId", async (req, res) => {
+  const { orderId, itemId } = req.params;
+  const { status } = req.body;
+
+  try {
+    // প্রথমে আইটেম স্ট্যাটাস আপডেট করা
+    const result = await ordersCollection.updateOne(
+      { _id: new ObjectId(orderId), "items._id": itemId },
+      { $set: { "items.$.itemOrderStatus": status } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Order or item not found" });
+    }
+
+    // আপডেটেড অর্ডার বের করা
+    const order = await ordersCollection.findOne({
+      _id: new ObjectId(orderId),
+    });
+
+    if (!order) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Order not found" });
+    }
+
+    // আইটেম স্ট্যাটাস অনুযায়ী অর্ডারের স্ট্যাটাস নির্ধারণ
+    const itemStatuses = order.items.map((item) => item.itemOrderStatus);
+
+    let newOrderStatus;
+    if (itemStatuses.every((s) => s === "pending")) {
+      newOrderStatus = "pending";
+    } else if (itemStatuses.every((s) => s === "processing")) {
+      newOrderStatus = "processing";
+    } else if (itemStatuses.every((s) => s === "ready-to-ship")) {
+      newOrderStatus = "ready-to-ship";
+    } else if (itemStatuses.every((s) => s === "shipped")) {
+      newOrderStatus = "shipped";
+    } else if (itemStatuses.every((s) => s === "delivered")) {
+      newOrderStatus = "delivered";
+    } else if (itemStatuses.every((s) => s === "cancelled")) {
+      newOrderStatus = "cancelled";
+    } else {
+      // মিক্সড স্ট্যাটাসের ক্ষেত্রে সাধারণত processing
+      newOrderStatus = "processing";
+    }
+
+    // অর্ডারের মূল স্ট্যাটাস আপডেট করা
+    await ordersCollection.updateOne(
+      { _id: new ObjectId(orderId) },
+      { $set: { orderStatus: newOrderStatus } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Item and order status updated successfully",
+      itemStatus: status,
+      orderStatus: newOrderStatus,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.get("/seller-payments", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // seller এর order খুঁজে বের করা
+    const orders = await ordersCollection
+      .find({
+        "items.vendorId": user._id.toString(), // vendorId যদি string আকারে থাকে
+      })
+      .toArray();
+
+    const sellerItems = [];
+
+    orders.forEach((order) => {
+      order.items.forEach((item) => {
+        if (item.vendorId.toString() === user._id.toString()) {
+          sellerItems.push({
+            ...item, // first copy item properties
+            orderId: order._id,
+            paymentStatus: order.paymentStatus,
+            orderStatus: order.orderStatus,
+            shippingInfo: order.shippingInfo,
+            createdAt: order.createdAt, // override item.createdAt
+          });
+        }
+      });
+    });
+
+    res.status(200).json({ success: true, items: sellerItems });
+  } catch (error) {
+    console.error("❌ Error in /seller-payments:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Withdraw request create
+app.post("/seller-withdraw", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    const { amount, method, methodDetails } = req.body;
+    const seller = await sellerCollections.findOne({
+      userId: new ObjectId(user._id),
+    });
+    if (!seller) return res.status(404).json({ message: "Seller not found" });
+
+    // Orders fetch
+    const orders = await ordersCollection
+      .find({
+        "items.vendorId": seller.userId.toString(), // vendorId string হলে কাজ করবে
+        "items.itemOrderStatus": "delivered",
+        paymentStatus: "confirmed",
+      })
+      .toArray();
+    // Seller earnings calculate
+    const earnings = orders
+      .flatMap((o) => o.items)
+      .filter((i) => {
+        const match =
+          i.vendorId.toString() === seller.userId.toString() &&
+          i.itemOrderStatus === "delivered";
+        return match;
+      })
+      .reduce((acc, i) => {
+        const price = Number(i.price);
+        const qty = Number(i.quantity);
+        console.log(`➕ Adding: ${price} x ${qty} = ${price * qty}`);
+        return acc + price * qty;
+      }, 0);
+
+    // Previous withdraw history
+    const history = await withdrawsCollection
+      .find({ sellerId: seller._id })
+      .toArray();
+    const totalWithdrawn = history.reduce((a, h) => a + h.amount, 0);
+    const withdrawable = earnings - totalWithdrawn;
+
+    if (amount > withdrawable) {
+      console.log("❌ Insufficient Balance:", {
+        requested: amount,
+        withdrawable,
+      });
+      return res
+        .status(400)
+        .json({ message: "Insufficient withdrawable balance" });
+    }
+
+    const withdrawRequest = {
+      sellerId: seller._id,
+      amount,
+      method,
+      methodDetails,
+      status: "pending", // admin approve করবে
+      createdAt: new Date(),
+    };
+
+    await withdrawsCollection.insertOne(withdrawRequest);
+    res
+      .status(200)
+      .json({ success: true, message: "Withdraw request submitted" });
+  } catch (err) {
+    console.error("🔥 Error:", err);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+// Withdraw history get
+app.get("/seller-withdraw-history", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    const seller = await sellerCollections.findOne({
+      userId: new ObjectId(user._id),
+    });
+    if (!seller) return res.status(404).json({ message: "Seller not found" });
+
+    const history = await withdrawsCollection
+      .find({ sellerId: seller._id })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json({ success: true, history });
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/get-admin-products", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Fetch all products for that vendor
+    const products = await productsCollection.find().sort({createdAt: -1}).toArray();
+
+    res.status(200).json({ success: true, products });
+  } catch (error) {
+    console.error("Error fetching seller products:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.delete("/delete-admin-product/:id", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { id } = req.params;
+
+    // Delete only if the product belongs to this vendor
+    const result = await productsCollection.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Product not found or not authorized",
+      });
+    }
+
+    res
+      .status(200)
+      .json({ success: true, message: "Product deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting product:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.put("/update-admin-product/:id", async (req, res) => {
+  const { id } = req.params;
+  const updatedData = req.body;
+
+  try {
+    const result = await productsCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: updatedData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Product updated successfully",
+    });
+  } catch (error) {
+    console.error("Error updating product:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.post("/add-admin-category", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    const { name } = req.body;
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+    if (!name) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Category name required" });
+    }
+
+    const exists = await productsCategories.findOne({ name: name.trim() });
+    if (exists) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Category already exists" });
+    }
+
+    const result = await productsCategories.insertOne({
+      name: name.trim(),
+      createdAt: new Date(),
+    });
+
+    res.status(201).json({
+      success: true,
+      message: "Category added",
+      categoryId: result.insertedId,
+    });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// ✅ 3. Update category
+app.put("/update-admin-category/:id", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    if (!ObjectId.isValid(id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid category id" });
+    }
+
+    const result = await productsCategories.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { name: name.trim() } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Category not found" });
+    }
+
+    res.status(200).json({ success: true, message: "Category updated" });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// ✅ 4. Delete category
+app.delete("/delete-admin-category/:id", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    const { id } = req.params;
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+    if (!ObjectId.isValid(id)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid category id" });
+    }
+
+    const result = await productsCategories.deleteOne({
+      _id: new ObjectId(id),
+    });
+
+    if (result.deletedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Category not found" });
+    }
+
+    res.status(200).json({ success: true, message: "Category deleted" });
+  } catch (error) {
+    console.log(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/admin-products/orders", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+    const orders = await ordersCollection.find().sort({createdAt: -1}).toArray();
+    res.status(200).json({ success: true, orders });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.patch("/admin-products/orders/:orderId/status", async (req, res) => {
+  const { orderId } = req.params;
+  const { status } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+    const result = await ordersCollection.updateOne(
+      { _id: new ObjectId(orderId) },
+      { $set: { orderStatus: status, updatedAt: new Date() } }
+    );
+
+    res
+      .status(200)
+      .json({ success: true, message: "Order status updated", result });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+});
+
+// Update payment status
+app.patch("/admin-products/orders/:orderId/payment", async (req, res) => {
+  const { orderId } = req.params;
+  const { status } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user from token
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+    const result = await ordersCollection.updateOne(
+      { _id: new ObjectId(orderId) },
+      { $set: { paymentStatus: status, updatedAt: new Date() } }
+    );
+
+    res
+      .status(200)
+      .json({ success: true, message: "Payment status updated", result });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+});
+
+app.get("/admin-withdrawData", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+    const withdrawData = await withdrawsCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json({ success: true, withdrawData });
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.patch("/admin-withdraw/:withdrawId/status", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ message: "Forbidden: Admins only" });
+    }
+
+    const { withdrawId } = req.params;
+    const { status } = req.body; // pending, approved, rejected
+
+    const result = await withdrawsCollection.updateOne(
+      { _id: new ObjectId(withdrawId) },
+      { $set: { status } }
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(404).json({ message: "Withdraw request not found" });
+    }
+
+    res.status(200).json({ message: "Withdraw status updated successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/seller/banner-requests/:sellerId", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(403).json({ message: "Forbidden: Seller only" });
+    }
+
+    const banners = await bannersCollection
+      .find({ sellerId: req.params.sellerId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json({ success: true, banners });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.post("/seller/banner-request", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  const { title, description, ctaText, ctaLink, image, sellerId, sellerName } =
+    req.body;
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(403).json({ message: "Forbidden: Seller only" });
+    }
+
+    const newBanner = {
+      title,
+      description,
+      ctaText,
+      ctaLink,
+      image,
+      sellerId,
+      sellerName,
+      status: "pending",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await bannersCollection.insertOne(newBanner);
+    res.json({ success: true, banner: result.insertedId });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.patch("/seller/banner-request/:bannerId", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  const { bannerId } = req.params;
+  const { title, description, ctaText, ctaLink, image } = req.body;
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(403).json({ message: "Forbidden: Seller only" });
+    }
+    const banner = await bannersCollection.findOne({
+      _id: new ObjectId(bannerId),
+    });
+
+    if (!banner) return res.status(404).json({ message: "Banner not found" });
+    if (banner.status === "approved")
+      return res
+        .status(400)
+        .json({ message: "Approved banner cannot be edited" });
+
+    await bannersCollection.updateOne(
+      { _id: new ObjectId(bannerId) },
+      {
+        $set: {
+          title,
+          description,
+          ctaText,
+          ctaLink,
+          image,
+          updatedAt: new Date(),
+        },
+      }
+    );
+
+    res.json({ success: true, message: "Banner updated" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.delete("/seller/banner-request/:bannerId", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  const { bannerId } = req.params;
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(403).json({ message: "Forbidden: Seller only" });
+    }
+    const banner = await bannersCollection.findOne({
+      _id: new ObjectId(bannerId),
+    });
+    if (!banner) return res.status(404).json({ message: "Banner not found" });
+    if (banner.status === "approved")
+      return res
+        .status(400)
+        .json({ message: "Approved banner cannot be deleted" });
+
+    await bannersCollection.deleteOne({ _id: new ObjectId(bannerId) });
+    res.json({ success: true, message: "Banner deleted" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/admin/banner-requests", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ message: "Forbidden: Admins only" });
+    }
+    const banners = await bannersCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json({ success: true, banners });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// PATCH /admin/banner-request/:id/status
+app.patch("/admin/banner-request/:id/status", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  const { id } = req.params;
+  const { status } = req.body; // expected: "pending", "approved", "rejected"
+
+  if (!["pending", "approved", "rejected"].includes(status)) {
+    return res.status(400).json({ message: "Invalid status value" });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ message: "Forbidden: Admins only" });
+    }
+
+    const banner = await bannersCollection.findOne({ _id: new ObjectId(id) });
+    if (!banner) return res.status(404).json({ message: "Banner not found" });
+
+    // Remove restriction, always allow status change
+    await bannersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { status: status } }
+    );
+
+    res.json({ success: true, message: `Banner status updated to ${status}` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
   }
 });
 
 
 
+app.get("/user-all/orders/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const orders = await ordersCollection
+      .find({
+        userId,
+      })
+      .toArray();
+
+    res.json({ success: true, orders });
+  } catch (error) {
+    console.error("❌ Error fetching orders:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.get("/home-banners", async (req, res) => {
+  try {
+    const banners = await bannersCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json({ success: true, banners });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// নতুন আসা product → createdAt দিয়ে sort
+app.get("/products/latest", async (req, res) => {
+  try {
+    const latestProducts = await productsCollection
+      .find()
+      .sort({ createdAt: -1 }) // নতুন আগে
+      .limit(10)
+      .toArray();
+
+    res.status(200).json({ success: true, products: latestProducts });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/products/most-popular-category", async (req, res) => {
+  try {
+    const result = await productsCollection
+      .aggregate([
+        {
+          $group: {
+            _id: "$category",        // category অনুযায়ী group
+            count: { $sum: 1 }       // প্রতিটা category এর product সংখ্যা
+          }
+        },
+        { $sort: { count: -1 } },    // বেশি product আগে
+        { $limit: 1 }                // শুধু ১টা category আনবে
+      ])
+      .toArray();
+
+    if (!result.length) {
+      return res.status(404).json({ message: "No categories found" });
+    }
+
+    const mostPopularCategory = result[0]._id;
+
+    // এবার সেই category এর product গুলো আনবো
+    const products = await productsCollection
+      .find({ category: mostPopularCategory })
+      .limit(20)
+      .toArray();
+
+    res.status(200).json({
+      success: true,
+      category: mostPopularCategory,
+      products,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+
+// Rating >= 4.5 হলে টপ rated products
+app.get("/products/top-rated", async (req, res) => {
+  try {
+    const topRatedProducts = await productsCollection
+      .find({ rating: { $gte: 4.5 } })
+      .sort({ rating: -1 })
+      .limit(10)
+      .toArray();
+
+    res.status(200).json({ success: true, products: topRatedProducts });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.get("/products/featured", async (req, res) => {
+  try {
+    const products = await productsCollection.find({ isFeatured: true }).toArray();
+    res.json({ success: true, products });
+  } catch (err) {
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+// Highest discount products
+app.get("/products/high-discounts", async (req, res) => {
+  try {
+    const products = await productsCollection
+      .aggregate([
+        {
+          $addFields: {
+            discountPercent: {
+              $round: [
+                {
+                  $multiply: [
+                    { $divide: [{ $subtract: ["$price", "$discountPrice"] }, "$price"] },
+                    100
+                  ]
+                },
+                0
+              ]
+            }
+          }
+        },
+        { $sort: { discountPercent: -1 } },
+        { $limit: 5 }
+      ])
+      .toArray();
+
+    res.json({ success: true, products });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
 
 
 const server = app.listen(port, () => {
@@ -4439,7 +6267,6 @@ io.on("connection", (socket) => {
       console.log(error);
     }
   });
-
   // মেসেজ পাঠানো
   socket.on("sendMessage", async (messageData) => {
     const {
