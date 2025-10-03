@@ -14,6 +14,16 @@ const http = require("http");
 const { Server } = require("socket.io");
 const { timeStamp } = require("console");
 const { translate } = require("@vitalets/google-translate-api");
+const PDFDocument = require("pdfkit");
+const stream = require("stream");
+const dns = require("dns");
+
+// Prefer IPv4 first to avoid DNS resolution issues in some environments
+try {
+  if (typeof dns.setDefaultResultOrder === 'function') {
+    dns.setDefaultResultOrder('ipv4first');
+  }
+} catch (_) {}
 
 const app = express();
 const port = process.env.PORT || 5000;
@@ -40,6 +50,8 @@ const client = new MongoClient(uri, {
   },
 });
 
+// (audio upload route is defined after audioUpload is initialized)
+
 // MongoDB connection
 let isConnected = false;
 
@@ -55,10 +67,31 @@ async function connectToMongo() {
 }
 
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAMe,
-  api_key: process.env.CLOUDINARY_API_KEy,
-  api_secret: process.env.CLOUDINARY_API_SECREt,
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
 });
+
+// Helper function to upload buffer to Cloudinary
+const uploadBufferToCloudinary = (buffer, fileName) => {
+  return new Promise((resolve, reject) => {
+    const uploadStream = cloudinary.uploader.upload_stream(
+      {
+        resource_type: "raw",
+        public_id: fileName,
+        folder: "certificates",
+        format: "pdf",
+      },
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+    const bufferStream = new stream.PassThrough();
+    bufferStream.end(buffer);
+    bufferStream.pipe(uploadStream);
+  });
+};
 
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
@@ -76,6 +109,63 @@ const upload = multer({
   storage: storage,
   limits: {
     fileSize: 50 * 1024 * 1024, // 50MB limit
+  },
+});
+
+// Video storage configuration for Cloudinary
+const videoStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    return {
+      folder: "courseVideos",
+      resource_type: "video",
+      format: "mp4",
+      public_id: `video_${Date.now()}_${file.originalname.replace(/\.[^/.]+$/, "")}`,
+      transformation: [{ quality: "auto", fetch_format: "auto" }],
+    };
+  },
+});
+
+const videoUpload = multer({
+  storage: videoStorage,
+  limits: {
+    fileSize: 200 * 1024 * 1024, // 200MB limit for videos
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept video files only
+    if (file.mimetype.startsWith("video/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only video files are allowed!"), false);
+    }
+  },
+});
+
+// Audio storage configuration (Cloudinary treats audio under resource_type "video")
+const audioStorage = new CloudinaryStorage({
+  cloudinary: cloudinary,
+  params: async (req, file) => {
+    return {
+      folder: "courseAudio",
+      resource_type: "video",
+      public_id: `audio_${Date.now()}_${file.originalname.replace(/\.[^/.]+$/, "")}`,
+      // Let Cloudinary auto-detect audio format
+      transformation: [{ quality: "auto" }],
+    };
+  },
+});
+
+const audioUpload = multer({
+  storage: audioStorage,
+  limits: {
+    fileSize: 50 * 1024 * 1024, // 50MB limit for audio
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype.startsWith("audio/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only audio files are allowed!"), false);
+    }
   },
 });
 
@@ -99,6 +189,226 @@ app.use(async (req, res, next) => {
     res.status(500).send({ message: "Failed to connect to database" });
   }
 });
+
+// Upload audio (listening responses) to Cloudinary
+app.post("/upload/audio", audioUpload.single("audio"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No audio file uploaded" });
+    }
+
+    const audioUrl = req.file.path; // Cloudinary URL
+    const publicId = req.file.filename;
+
+    return res.status(200).json({
+      success: true,
+      message: "Audio uploaded successfully",
+      audioUrl,
+      publicId,
+      format: req.file.format || null,
+      duration: req.file.duration || null,
+    });
+  } catch (error) {
+    console.error("POST /upload/audio error:", error);
+    return res.status(500).json({ success: false, message: "Failed to upload audio" });
+  }
+});
+
+// List attempts for a specific course for grading dashboard (owner/admin only)
+app.get("/courses/:courseId/attempts", verifyTokenEarly, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const { graded } = req.query; // optional: 'true' | 'false'
+
+    let courseObjId;
+    try { courseObjId = new ObjectId(courseId); } catch {
+      return res.status(400).json({ success: false, message: "Invalid course id" });
+    }
+
+    // Load course and post to determine owner and community
+    const course = await communityCoursesCollection.findOne({ _id: courseObjId }, { projection: { postId: 1, communityId: 1 } });
+    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+    const post = await communityPostsCollection.findOne({ _id: course.postId }, { projection: { authorId: 1 } });
+    if (!post) return res.status(404).json({ success: false, message: "Course post not found" });
+
+    const isOwner = post.authorId?.toString() === req.user._id?.toString();
+    const role = await getCommunityRole(req.user._id, course.communityId.toString());
+    const isCommunityAdmin = role.isMainAdmin || role.isAdmin;
+    if (!isOwner && !isCommunityAdmin) {
+      return res.status(403).json({ success: false, message: "Not authorized to view attempts for this course" });
+    }
+
+    const query = { courseId: courseObjId, type: { $in: ['written', 'listening'] } };
+    if (graded === 'true') query.graded = true;
+    if (graded === 'false') query.graded = false;
+
+    const attempts = await communityExamAttemptsCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Join with user and exam details for context
+    const enriched = await Promise.all(attempts.map(async (att) => {
+      const user = await usersCollections.findOne({ _id: att.userId }, { projection: { name: 1, number: 1 } });
+      const exam = await communityExamsCollection.findOne({ _id: att.examId }, { projection: { type: 1, passingScore: 1, chapterId: 1 } });
+      return { ...att, user, exam };
+    }));
+
+    return res.json({ success: true, data: enriched });
+  } catch (error) {
+    console.error("GET /courses/:courseId/attempts error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// List communities created by the current user
+app.get("/my-communities", async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+    let user;
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      user = await usersCollections.findOne({ number: decoded.number });
+    } catch (e) {
+      return res.status(401).json({ success: false, message: "Invalid token" });
+    }
+    if (!user) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+
+    const mine = await communityCollection
+      .find({ createdBy: user._id })
+      .sort({ createdAt: -1 })
+      .project({
+        name: 1,
+        description: 1,
+        logo: 1,
+        coverImage: 1,
+        membersCount: 1,
+        category: 1,
+        isVerified: 1,
+      })
+      .toArray();
+
+    return res.json({ success: true, data: mine });
+  } catch (error) {
+    console.error("GET /my-communities error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get current user's permissions in a community
+app.get("/communities/:id/permissions", verifyTokenEarly, async (req, res) => {
+  try {
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch (_) {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+    const role = await getCommunityRole(req.user._id, communityObjId.toString());
+    if (!role.exists) return res.status(404).json({ success: false, message: "Community not found" });
+    return res.json({ success: true, data: role });
+  } catch (error) {
+    console.error("GET /communities/:id/permissions error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Add a role (admin/editor) to a user in a community (mainAdmin only)
+app.post("/communities/:id/roles/add", verifyTokenEarly, async (req, res) => {
+  try {
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch (_) {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+    const { userId, role } = req.body; // role: 'admin' | 'editor'
+    if (!userId || !role || !["admin", "editor"].includes(role)) {
+      return res.status(400).json({ success: false, message: "userId and valid role required" });
+    }
+    let userObjId;
+    try {
+      userObjId = new ObjectId(userId);
+    } catch (_) {
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+
+    const community = await communityCollection.findOne({ _id: communityObjId });
+    if (!community) return res.status(404).json({ success: false, message: "Community not found" });
+    if (community.mainAdmin?.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Only mainAdmin can manage roles" });
+    }
+
+    if (role === "admin") {
+      await communityCollection.updateOne(
+        { _id: communityObjId },
+        { $addToSet: { admins: userObjId }, $pull: { editors: userObjId } }
+      );
+    } else {
+      await communityCollection.updateOne(
+        { _id: communityObjId },
+        { $addToSet: { editors: userObjId }, $pull: { admins: userObjId } }
+      );
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("POST /communities/:id/roles/add error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Remove a role (admin/editor) from a user (mainAdmin only)
+app.post("/communities/:id/roles/remove", verifyTokenEarly, async (req, res) => {
+  try {
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch (_) {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+    const { userId, role } = req.body; // role: 'admin' | 'editor'
+    if (!userId || !role || !["admin", "editor"].includes(role)) {
+      return res.status(400).json({ success: false, message: "userId and valid role required" });
+    }
+    let userObjId;
+    try {
+      userObjId = new ObjectId(userId);
+    } catch (_) {
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+
+    const community = await communityCollection.findOne({ _id: communityObjId });
+    if (!community) return res.status(404).json({ success: false, message: "Community not found" });
+    if (community.mainAdmin?.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Only mainAdmin can manage roles" });
+    }
+
+    if (role === "admin") {
+      await communityCollection.updateOne(
+        { _id: communityObjId },
+        { $pull: { admins: userObjId } }
+      );
+    } else {
+      await communityCollection.updateOne(
+        { _id: communityObjId },
+        { $pull: { editors: userObjId } }
+      );
+    }
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("POST /communities/:id/roles/remove error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+
+// Get community detail
+// (moved below after DB collection declarations)
 
 const db = client.db("flybook");
 const usersCollections = db.collection("usersCollections");
@@ -128,6 +438,28 @@ const ordersCollection = db.collection("ordersCollection");
 const addressesCollection = db.collection("addressesCollection");
 const withdrawsCollection = db.collection("withdrawsCollection");
 const bannersCollection = db.collection("bannersCollection");
+const communityCollection = db.collection("communityCollection");
+const communityFollowsCollection = db.collection("communityFollowsCollection");
+const communityCoursesCollection = db.collection("communityCoursesCollection");
+const communityChaptersCollection = db.collection(
+  "communityChaptersCollection"
+);
+const communityLessonsCollection = db.collection("communityLessonsCollection");
+const communityExamsCollection = db.collection("communityExamsCollection");
+const communityExamAttemptsCollection = db.collection(
+  "communityExamAttemptsCollection"
+);
+const communityCertificatesCollection = db.collection(
+  "communityCertificatesCollection"
+);
+const communityPostsCollection = db.collection("communityPostsCollection");
+const communityPostLikesCollection = db.collection("communityPostLikesCollection");
+const communityProgressCollection = db.collection(
+  "communityProgressCollection"
+);
+const communityEnrollmentsCollection = db.collection(
+  "communityEnrollmentsCollection"
+);
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -160,6 +492,1138 @@ const GMINI_API_KEY = process.env.GMINI_API_KEY;
 app.get("/", (req, res) => {
   res.send("API is running!");
 });
+
+// =====================
+// Community: Posts, Courses, Exams, Certificates
+// =====================
+
+// Early auth middleware for community routes (defined here to avoid reference order issues)
+async function verifyTokenEarly(req, res, next) {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res.status(401).json({ message: "Unauthorized: Token missing" });
+    }
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(403).json({ message: "No User Founded" });
+    }
+    req.user = user;
+    next();
+  } catch (err) {
+    console.error("Auth error:", err);
+    return res.status(401).json({ message: "Unauthorized: Invalid token" });
+  }
+}
+
+// Helper: role check inside a community
+async function getCommunityRole(userId, communityId) {
+  const comm = await communityCollection.findOne({ _id: new ObjectId(communityId) });
+  if (!comm) return { exists: false };
+  const uid = userId?.toString();
+  const isMainAdmin = comm.mainAdmin?.toString() === uid;
+  const isAdmin = comm.admins?.some((x) => x.toString() === uid);
+  const isEditor = comm.editors?.some((x) => x.toString() === uid);
+  return { exists: true, isMainAdmin, isAdmin, isEditor };
+}
+
+// Create a post in a community (text | video | course)
+app.post("/communities/:id/posts", verifyTokenEarly, async (req, res) => {
+  try {
+    const communityId = req.params.id;
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(communityId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+
+    const { title, description, type, content, visibility = "public", accessCode = null, chapters = [] } = req.body;
+    if (!title || !type) {
+      return res.status(400).json({ success: false, message: "title and type are required" });
+    }
+
+    // Role enforcement: main admin/admin/editor can create posts
+    const role = await getCommunityRole(req.user._id, communityId);
+    if (!role.exists) return res.status(404).json({ success: false, message: "Community not found" });
+    if (!(role.isMainAdmin || role.isAdmin || role.isEditor)) {
+      return res.status(403).json({ success: false, message: "Insufficient permissions" });
+    }
+
+    const baseDoc = {
+      communityId: communityObjId,
+      authorId: req.user._id,
+      title,
+      description: description || "",
+      type, // 'text' | 'video' | 'course'
+      visibility, // 'public' | 'private'
+      accessCode,
+      likesCount: 0,
+      createdAt: new Date(),
+    };
+
+    // For non-course posts
+    if (type !== "course") {
+      baseDoc.content = content; // string or [videoUrls]
+      const result = await communityPostsCollection.insertOne(baseDoc);
+      return res.status(201).json({ success: true, postId: result.insertedId });
+    }
+
+    // For course posts: create post, plus course/chapters/lessons/exams
+    const postResult = await communityPostsCollection.insertOne({ ...baseDoc, content: null });
+    const courseDoc = {
+      postId: postResult.insertedId,
+      communityId: communityObjId,
+      title,
+      createdAt: new Date(),
+    };
+    const courseResult = await communityCoursesCollection.insertOne(courseDoc);
+
+    // Create chapters and lessons; chapters: [{ title, videos: [url], exam: {type, questions, passingScore} }]
+    for (let idx = 0; idx < chapters.length; idx++) {
+      const ch = chapters[idx];
+      const chRes = await communityChaptersCollection.insertOne({
+        courseId: courseResult.insertedId,
+        order: idx + 1,
+        title: ch.title || `Chapter ${idx + 1}`,
+        createdAt: new Date(),
+      });
+      // lessons
+      const videos = Array.isArray(ch.videos) ? ch.videos : [];
+      for (let l = 0; l < videos.length; l++) {
+        await communityLessonsCollection.insertOne({
+          courseId: courseResult.insertedId,
+          chapterId: chRes.insertedId,
+          order: l + 1,
+          videoUrl: videos[l],
+          createdAt: new Date(),
+        });
+      }
+      // optional exam
+      if (ch.exam && ch.exam.type) {
+        await communityExamsCollection.insertOne({
+          postId: postResult.insertedId,
+          courseId: courseResult.insertedId,
+          chapterId: chRes.insertedId,
+          type: ch.exam.type, // quiz | written | listening
+          questions: Array.isArray(ch.exam.questions) ? ch.exam.questions : [],
+          passingScore: Number(ch.exam.passingScore || 0),
+          createdAt: new Date(),
+        });
+      }
+    }
+
+    return res.status(201).json({ success: true, postId: postResult.insertedId, courseId: courseResult.insertedId });
+  } catch (error) {
+    console.error("POST /communities/:id/posts error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get posts of a community (public or private with accessCode)
+app.get("/communities/:id/posts", async (req, res) => {
+  try {
+    const communityId = req.params.id;
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(communityId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+
+    const { accessCode } = req.query;
+    const query = { communityId: communityObjId };
+    if (!accessCode) {
+      query.visibility = "public";
+    } else {
+      // include private if code matches document's accessCode
+      // fetch all and filter below for simplicity
+    }
+
+    const posts = await communityPostsCollection.find({ communityId: communityObjId }).sort({ createdAt: -1 }).toArray();
+
+    const filtered = posts.filter((p) => {
+      if (p.visibility === "public") return true;
+      if (p.visibility === "private" && accessCode && accessCode === p.accessCode) return true;
+      return false;
+    });
+
+    return res.json({ success: true, data: filtered });
+  } catch (error) {
+    console.error("GET /communities/:id/posts error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Map postId -> courseId
+app.get("/posts/:postId/course", async (req, res) => {
+  try {
+    let postObjId;
+    try {
+      postObjId = new ObjectId(req.params.postId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid post id" });
+    }
+    const course = await communityCoursesCollection.findOne(
+      { postId: postObjId },
+      { projection: { _id: 1 } }
+    );
+    if (!course) return res.status(404).json({ success: false, message: "Course not found for this post" });
+    return res.json({ success: true, courseId: course._id });
+  } catch (error) {
+    console.error("GET /posts/:postId/course error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Like/Unlike a post (toggle)
+app.post("/posts/:postId/like", verifyTokenEarly, async (req, res) => {
+  try {
+    let postObjId;
+    try {
+      postObjId = new ObjectId(req.params.postId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid post id" });
+    }
+
+    const existing = await communityPostLikesCollection.findOne({
+      postId: postObjId,
+      userId: req.user._id,
+    });
+
+    if (existing) {
+      // Unlike
+      await communityPostLikesCollection.deleteOne({ _id: existing._id });
+      await communityPostsCollection.updateOne(
+        { _id: postObjId },
+        { $inc: { likesCount: -1 } }
+      );
+      return res.json({ success: true, liked: false });
+    } else {
+      // Like
+      await communityPostLikesCollection.insertOne({
+        postId: postObjId,
+        userId: req.user._id,
+        createdAt: new Date(),
+      });
+      await communityPostsCollection.updateOne(
+        { _id: postObjId },
+        { $inc: { likesCount: 1 } }
+      );
+      return res.json({ success: true, liked: true });
+    }
+  } catch (error) {
+    console.error("POST /posts/:postId/like error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Check if current user liked a post
+app.get("/posts/:postId/liked", verifyTokenEarly, async (req, res) => {
+  try {
+    let postObjId;
+    try {
+      postObjId = new ObjectId(req.params.postId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid post id" });
+    }
+    const doc = await communityPostLikesCollection.findOne({
+      postId: postObjId,
+      userId: req.user._id,
+    }, { projection: { _id: 1 } });
+    return res.json({ success: true, liked: !!doc });
+  } catch (error) {
+    console.error("GET /posts/:postId/liked error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Self-enroll into a course
+app.post("/courses/:courseId/enroll", verifyTokenEarly, async (req, res) => {
+  try {
+    let courseObjId;
+    try {
+      courseObjId = new ObjectId(req.params.courseId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid course id" });
+    }
+    const course = await communityCoursesCollection.findOne({ _id: courseObjId });
+    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+
+    await communityEnrollmentsCollection.updateOne(
+      { userId: req.user._id, courseId: courseObjId },
+      {
+        $setOnInsert: {
+          userId: req.user._id,
+          courseId: courseObjId,
+          postId: course.postId,
+          communityId: course.communityId,
+          role: "student",
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+    return res.status(201).json({ success: true });
+  } catch (error) {
+    console.error("POST /courses/:courseId/enroll error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Admin enroll another user
+app.post("/courses/:courseId/enroll-user", verifyTokenEarly, async (req, res) => {
+  try {
+    let courseObjId;
+    try {
+      courseObjId = new ObjectId(req.params.courseId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid course id" });
+    }
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ success: false, message: "userId required" });
+    let userObjId;
+    try {
+      userObjId = new ObjectId(userId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid userId" });
+    }
+
+    const course = await communityCoursesCollection.findOne({ _id: courseObjId });
+    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+
+    const role = await getCommunityRole(req.user._id, course.communityId.toString());
+    if (!(role.isMainAdmin || role.isAdmin || role.isEditor)) {
+      return res.status(403).json({ success: false, message: "Insufficient permissions" });
+    }
+
+    await communityEnrollmentsCollection.updateOne(
+      { userId: userObjId, courseId: courseObjId },
+      {
+        $setOnInsert: {
+          userId: userObjId,
+          courseId: courseObjId,
+          postId: course.postId,
+          communityId: course.communityId,
+          role: "student",
+          createdAt: new Date(),
+        },
+      },
+      { upsert: true }
+    );
+    return res.status(201).json({ success: true });
+  } catch (error) {
+    console.error("POST /courses/:courseId/enroll-user error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Check if current user is enrolled in a course
+app.get("/courses/:courseId/enrolled", verifyTokenEarly, async (req, res) => {
+  try {
+    let courseObjId;
+    try {
+      courseObjId = new ObjectId(req.params.courseId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid course id" });
+    }
+    const doc = await communityEnrollmentsCollection.findOne({ userId: req.user._id, courseId: courseObjId }, { projection: { _id: 1 } });
+    return res.json({ success: true, enrolled: !!doc });
+  } catch (error) {
+    console.error("GET /courses/:courseId/enrolled error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Course outline
+app.get("/courses/:courseId/outline", verifyTokenEarly, async (req, res) => {
+  try {
+    let courseObjId;
+    try {
+      courseObjId = new ObjectId(req.params.courseId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid course id" });
+    }
+    const course = await communityCoursesCollection.findOne(
+      { _id: courseObjId },
+      { projection: { _id: 1, title: 1, communityId: 1, postId: 1 } }
+    );
+    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+
+    const chapters = await communityChaptersCollection.find({ courseId: courseObjId }).sort({ order: 1 }).toArray();
+    const lessons = await communityLessonsCollection.find({ courseId: courseObjId }).sort({ chapterId: 1, order: 1 }).toArray();
+    const exams = await communityExamsCollection.find({ courseId: courseObjId }).toArray();
+
+    const examByChapter = new Map(exams.map((e) => [e.chapterId.toString(), e]));
+
+    const outline = chapters.map((ch) => {
+      const chLessons = lessons.filter((l) => l.chapterId.toString() === ch._id.toString());
+      const ex = examByChapter.get(ch._id.toString());
+      return {
+        chapterId: ch._id,
+        title: ch.title,
+        order: ch.order,
+        lessons: chLessons.map((l) => ({ lessonId: l._id, order: l.order, videoUrl: l.videoUrl })),
+        exam: ex
+          ? {
+              examId: ex._id,
+              type: ex.type,
+              passingScore: ex.passingScore,
+              questions: Array.isArray(ex.questions)
+                ? ex.questions.map((q) => ({ question: q.question, options: q.options }))
+                : [],
+            }
+          : null,
+      };
+    });
+
+    return res.json({ success: true, data: { courseId: course._id, title: course.title, outline } });
+  } catch (error) {
+    console.error("GET /courses/:courseId/outline error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Course progress
+app.get("/courses/:courseId/progress", verifyTokenEarly, async (req, res) => {
+  try {
+    let courseObjId;
+    try {
+      courseObjId = new ObjectId(req.params.courseId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid course id" });
+    }
+    const progress = await communityProgressCollection.findOne({ userId: req.user._id, courseId: courseObjId });
+    const attempts = await communityExamAttemptsCollection
+      .find({ userId: req.user._id, courseId: courseObjId })
+      .project({ examId: 1, score: 1, passed: 1, createdAt: 1 })
+      .sort({ createdAt: -1 })
+      .toArray();
+    return res.json({ success: true, data: { completedLessons: progress?.completedLessons || [], attempts } });
+  } catch (error) {
+    console.error("GET /courses/:courseId/progress error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Sanitized exam detail (no answers)
+app.get("/exams/:examId", verifyTokenEarly, async (req, res) => {
+  try {
+    let examObjId;
+    try {
+      examObjId = new ObjectId(req.params.examId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid exam id" });
+    }
+    const ex = await communityExamsCollection.findOne({ _id: examObjId });
+    if (!ex) return res.status(404).json({ success: false, message: "Exam not found" });
+    const sanitized = {
+      examId: ex._id,
+      type: ex.type,
+      passingScore: ex.passingScore,
+      questions: Array.isArray(ex.questions) ? ex.questions.map((q) => ({ question: q.question, options: q.options })) : [],
+    };
+    return res.json({ success: true, data: sanitized });
+  } catch (error) {
+    console.error("GET /exams/:examId error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Mark lesson complete for a user
+app.post("/courses/:courseId/lessons/:lessonId/complete", verifyTokenEarly, async (req, res) => {
+  try {
+    const { courseId, lessonId } = req.params;
+    let courseObjId, lessonObjId;
+    try {
+      courseObjId = new ObjectId(courseId);
+      lessonObjId = new ObjectId(lessonId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
+
+    const progressKey = { userId: req.user._id, courseId: courseObjId };
+    await communityProgressCollection.updateOne(progressKey, {
+      $addToSet: { completedLessons: lessonObjId },
+      $setOnInsert: { createdAt: new Date() },
+      $set: { updatedAt: new Date() },
+    }, { upsert: true });
+
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("POST /courses/:courseId/lessons/:lessonId/complete error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Attempt an exam (auto-grade quiz type, manual grade for written/listening)
+app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
+  try {
+    const { examId } = req.params;
+    let examObjId;
+    try {
+      examObjId = new ObjectId(examId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid exam id" });
+    }
+
+    const exam = await communityExamsCollection.findOne({ _id: examObjId });
+    if (!exam) return res.status(404).json({ success: false, message: "Exam not found" });
+
+    const { answers, audioUrl, proctoring } = req.body; // answers: [{questionIndex, answer}], audioUrl for listening, proctoring summary
+
+    // If client indicates submission must be blocked due to proctoring
+    if (proctoring && proctoring.blockedSubmission === true) {
+      return res.status(400).json({ success: false, message: "Submission blocked due to proctoring violations" });
+    }
+
+    // Quiz type: auto-grade
+    if (exam.type === "quiz") {
+      let score = 0;
+      if (Array.isArray(exam.questions)) {
+        for (let i = 0; i < exam.questions.length; i++) {
+          const given = answers?.find((a) => a.questionIndex === i)?.answer;
+          if (given && given === exam.questions[i].answer) score++;
+        }
+      }
+
+      const totalQuestions = exam.questions?.length || 1;
+      const percentageScore = Math.round((score / totalQuestions) * 100);
+      const passingScoreThreshold = Number(exam.passingScore || 0);
+      const passed = percentageScore >= passingScoreThreshold;
+      
+      const attemptDoc = {
+        userId: req.user._id,
+        examId: exam._id,
+        courseId: exam.courseId,
+        chapterId: exam.chapterId,
+        postId: exam.postId,
+        type: exam.type,
+        answers,
+        score: percentageScore,
+        correctAnswers: score,
+        totalQuestions,
+        passed,
+        graded: true,
+        createdAt: new Date(),
+        proctoring: proctoring || null,
+      };
+      const attemptRes = await communityExamAttemptsCollection.insertOne(attemptDoc);
+      return res.status(201).json({ success: true, attemptId: attemptRes.insertedId, score: percentageScore, correctAnswers: score, passed });
+    }
+
+    // Written type: pending manual grading
+    if (exam.type === "written") {
+      const attemptDoc = {
+        userId: req.user._id,
+        examId: exam._id,
+        courseId: exam.courseId,
+        chapterId: exam.chapterId,
+        postId: exam.postId,
+        type: exam.type,
+        answers, // Written answers
+        score: null,
+        passed: null,
+        graded: false, // Needs manual grading
+        createdAt: new Date(),
+        proctoring: proctoring || null,
+      };
+      const attemptRes = await communityExamAttemptsCollection.insertOne(attemptDoc);
+      return res.status(201).json({ success: true, attemptId: attemptRes.insertedId, message: "Submitted for grading", graded: false });
+    }
+
+    // Listening type: pending manual grading
+    if (exam.type === "listening") {
+      const attemptDoc = {
+        userId: req.user._id,
+        examId: exam._id,
+        courseId: exam.courseId,
+        chapterId: exam.chapterId,
+        postId: exam.postId,
+        type: exam.type,
+        audioUrl, // Recorded audio URL
+        answers, // Optional text answers
+        score: null,
+        passed: null,
+        graded: false, // Needs manual grading
+        createdAt: new Date(),
+        proctoring: proctoring || null,
+      };
+      const attemptRes = await communityExamAttemptsCollection.insertOne(attemptDoc);
+      return res.status(201).json({ success: true, attemptId: attemptRes.insertedId, message: "Submitted for grading", graded: false });
+    }
+
+    return res.status(400).json({ success: false, message: "Invalid exam type" });
+  } catch (error) {
+    console.error("POST /exams/:examId/attempt error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Grade a written/listening exam attempt (course owner or community admin only)
+app.post("/exams/attempts/:attemptId/grade", verifyTokenEarly, async (req, res) => {
+  try {
+    const { attemptId } = req.params;
+    const { score, feedback } = req.body;
+
+    // Validate id
+    let attemptObjId;
+    try {
+      attemptObjId = new ObjectId(attemptId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid attempt id" });
+    }
+
+    // Load attempt and exam
+    const attempt = await communityExamAttemptsCollection.findOne({ _id: attemptObjId });
+    if (!attempt) return res.status(404).json({ success: false, message: "Attempt not found" });
+
+    const exam = await communityExamsCollection.findOne({ _id: attempt.examId });
+    if (!exam) return res.status(404).json({ success: false, message: "Exam not found" });
+
+    // Authorization: Only course owner (post author) or community admins can grade
+    const course = await communityCoursesCollection.findOne({ _id: exam.courseId }, { projection: { communityId: 1, postId: 1 } });
+    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+
+    // Find the post to get the author (course owner)
+    const post = await communityPostsCollection.findOne({ _id: course.postId }, { projection: { authorId: 1, communityId: 1 } });
+    if (!post) return res.status(404).json({ success: false, message: "Course post not found" });
+
+    const isOwner = post.authorId?.toString() === req.user._id?.toString();
+    const role = await getCommunityRole(req.user._id, (post.communityId || course.communityId).toString());
+    const isCommunityAdmin = role.isMainAdmin || role.isAdmin;
+    if (!isOwner && !isCommunityAdmin) {
+      return res.status(403).json({ success: false, message: "Not authorized to grade this attempt" });
+    }
+
+    // Only allow grading written/listening types
+    if (!['written', 'listening'].includes(exam.type)) {
+      return res.status(400).json({ success: false, message: "Only written/listening attempts require grading" });
+    }
+
+    const percentageScore = Math.max(0, Math.min(100, Number(score)));
+    const passingScoreThreshold = Number(exam.passingScore || 0);
+    const passed = percentageScore >= passingScoreThreshold;
+
+    await communityExamAttemptsCollection.updateOne(
+      { _id: attemptObjId },
+      {
+        $set: {
+          score: percentageScore,
+          passed,
+          graded: true,
+          feedback: feedback || "",
+          gradedBy: req.user._id,
+          gradedAt: new Date(),
+        },
+      }
+    );
+
+    return res.json({ success: true, score: percentageScore, passed });
+  } catch (error) {
+    console.error("POST /exams/attempts/:attemptId/grade error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get ungraded attempts (platform-wide; internal/debug)
+app.get("/exams/attempts/ungraded", verifyTokenEarly, async (req, res) => {
+  try {
+    const attempts = await communityExamAttemptsCollection
+      .find({ graded: false })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Populate user and exam details
+    const enriched = await Promise.all(
+      attempts.map(async (att) => {
+        const user = await usersCollections.findOne({ _id: att.userId }, { projection: { name: 1, number: 1 } });
+        const exam = await communityExamsCollection.findOne({ _id: att.examId }, { projection: { type: 1, questions: 1 } });
+        return { ...att, user, exam };
+      })
+    );
+
+    return res.json({ success: true, data: enriched });
+  } catch (error) {
+    console.error("GET /exams/attempts/ungraded error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Issue certificate when course completed (all lessons completed and all chapter exams passed where present)
+app.post("/courses/:courseId/certificate", verifyTokenEarly, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    let courseObjId;
+    try {
+      courseObjId = new ObjectId(courseId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid course id" });
+    }
+
+    // Validate completion
+    const lessons = await communityLessonsCollection.find({ courseId: courseObjId }).project({ _id: 1 }).toArray();
+    const lessonIds = lessons.map((l) => l._id.toString());
+    const progress = await communityProgressCollection.findOne({ userId: req.user._id, courseId: courseObjId });
+    const completed = new Set((progress?.completedLessons || []).map((x) => x.toString()));
+    const allLessonsDone = lessonIds.every((id) => completed.has(id));
+
+    // All exams passed
+    const exams = await communityExamsCollection.find({ courseId: courseObjId }).project({ _id: 1 }).toArray();
+    let allExamsPassed = true;
+    for (const ex of exams) {
+      const lastAttempt = await communityExamAttemptsCollection.find({ userId: req.user._id, examId: ex._id })
+        .sort({ createdAt: -1 })
+        .limit(1)
+        .toArray();
+      if (!lastAttempt[0]?.passed) { allExamsPassed = false; break; }
+    }
+
+    if (!allLessonsDone || !allExamsPassed) {
+      return res.status(400).json({ success: false, message: "Course not completed yet" });
+    }
+
+    // Build beautiful PDF certificate
+const doc = new PDFDocument({ 
+  size: "A4", 
+  layout: "landscape",
+  margin: 0 
+});
+const chunks = [];
+doc.on("data", (d) => chunks.push(d));
+const done = new Promise((resolve) => doc.on("end", resolve));
+
+// Get course details
+const courseDoc = await communityCoursesCollection.findOne({ _id: courseObjId }, { 
+  projection: { title: 1, description: 1 }
+});
+
+// Get user details
+const userName = req.user.name || req.user.number;
+const userEmail = req.user.email || "";
+
+// Certificate ID
+const certificateId = `CERT-${Date.now()}-${req.user._id.toString().slice(-6).toUpperCase()}`;
+const issueDate = new Date().toLocaleDateString('en-US', { 
+  year: 'numeric', 
+  month: 'long', 
+  day: 'numeric' 
+});
+
+// Page dimensions (A4 landscape)
+const pageWidth = 842;
+const pageHeight = 595;
+
+// Background decorative elements first
+doc.save();
+doc.circle(pageWidth / 2, 80, 40)
+   .fillColor('#eff6ff')
+   .fill();
+doc.restore();
+
+// Decorative border
+doc.save();
+doc.rect(20, 20, pageWidth - 40, pageHeight - 40)
+   .lineWidth(3)
+   .strokeColor('#1e40af')
+   .stroke();
+doc.restore();
+
+doc.save();
+doc.rect(30, 30, pageWidth - 60, pageHeight - 60)
+   .lineWidth(1)
+   .strokeColor('#3b82f6')
+   .stroke();
+doc.restore();
+
+// Top circle decoration
+doc.save();
+doc.circle(pageWidth / 2, 80, 35)
+   .lineWidth(2)
+   .strokeColor('#1e40af')
+   .stroke();
+doc.restore();
+
+// Header - Certificate Title
+doc.fontSize(42)
+   .fillColor('#1e40af')
+   .font('Helvetica-Bold')
+   .text('CERTIFICATE', 0, 100, { align: 'center' });
+
+doc.fontSize(28)
+   .fillColor('#3b82f6')
+   .text('OF COMPLETION', 0, 150, { align: 'center' });
+
+// Decorative line
+doc.save();
+doc.moveTo(pageWidth / 2 - 150, 190)
+   .lineTo(pageWidth / 2 + 150, 190)
+   .lineWidth(2)
+   .strokeColor('#fbbf24')
+   .stroke();
+doc.restore();
+
+// "This is to certify that"
+doc.fontSize(16)
+   .fillColor('#4b5563')
+   .font('Helvetica')
+   .text('This is to certify that', 0, 220, { align: 'center' });
+
+// User Name (highlighted)
+doc.fontSize(36)
+   .fillColor('#1e40af')
+   .font('Helvetica-Bold')
+   .text(userName, 0, 250, { align: 'center' });
+
+// Underline for name
+doc.moveTo(pageWidth / 2 - 200, 295)
+   .lineTo(pageWidth / 2 + 200, 295)
+   .lineWidth(1)
+   .strokeColor('#3b82f6')
+   .stroke();
+
+// Achievement text
+doc.fontSize(16)
+   .fillColor('#4b5563')
+   .font('Helvetica')
+   .text('has successfully completed the course', 0, 315, { align: 'center' });
+
+// Course Title (highlighted box)
+const courseTitleY = 350;
+doc.roundedRect(pageWidth / 2 - 250, courseTitleY - 10, 500, 50, 5)
+   .fillColor('#eff6ff')
+   .fill();
+
+doc.fontSize(24)
+   .fillColor('#1e40af')
+   .font('Helvetica-Bold')
+   .text(courseDoc?.title || "Course", 0, courseTitleY + 5, { 
+     align: 'center',
+     width: pageWidth
+   });
+
+// Certificate details section
+const detailsY = 430;
+doc.fontSize(12)
+   .fillColor('#6b7280')
+   .font('Helvetica');
+
+// Certificate ID
+doc.text(`Certificate ID: ${certificateId}`, 80, detailsY, { align: 'left' });
+
+// Issue Date
+doc.text(`Issue Date: ${issueDate}`, pageWidth - 280, detailsY, { align: 'left' });
+
+// Footer decorative line
+doc.moveTo(80, detailsY + 30)
+   .lineTo(pageWidth - 80, detailsY + 30)
+   .lineWidth(1)
+   .strokeColor('#e5e7eb')
+   .stroke();
+
+// Platform name and signature area
+doc.fontSize(14)
+   .fillColor('#1e40af')
+   .font('Helvetica-Bold')
+   .text('FlyBook Learning Platform', 80, detailsY + 50, { align: 'left' });
+
+// Signature line
+doc.moveTo(pageWidth - 280, detailsY + 70)
+   .lineTo(pageWidth - 80, detailsY + 70)
+   .lineWidth(1)
+   .strokeColor('#9ca3af')
+   .stroke();
+
+doc.fontSize(10)
+   .fillColor('#6b7280')
+   .font('Helvetica')
+   .text('Authorized Signature', pageWidth - 280, detailsY + 75, { 
+     align: 'center',
+     width: 200
+   });
+
+// Bottom decorative corners
+doc.circle(60, pageHeight - 60, 20)
+   .fillColor('#fbbf24', 0.2)
+   .fill();
+
+doc.circle(pageWidth - 60, pageHeight - 60, 20)
+   .fillColor('#3b82f6', 0.2)
+   .fill();
+
+doc.end();
+await done;
+const pdfBuffer = Buffer.concat(chunks);
+
+// Upload to Cloudinary
+const fileName = `cert_${req.user._id}_${courseId}_${Date.now()}`;
+const upload = await uploadBufferToCloudinary(pdfBuffer, fileName);
+const certificateUrl = upload.secure_url;
+
+// Save record with URL and details
+const certificateDoc = {
+  userId: req.user._id,
+  userName: userName,
+  userEmail: userEmail,
+  courseId: courseObjId,
+  courseTitle: courseDoc?.title || "Course",
+  certificateId: certificateId,
+  issuedAt: new Date(),
+  certificateUrl,
+  publicId: upload.public_id,
+};
+const certRes = await communityCertificatesCollection.insertOne(certificateDoc);
+return res.status(201).json({ 
+  success: true, 
+  certificateId: certRes.insertedId, 
+  certificateUrl,
+  certificateNumber: certificateId
+});
+  } catch (error) {
+    console.error("POST /courses/:courseId/certificate error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Create Community (Main Admin = token owner)
+app.post("/community-create", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ success: false, message: "Unauthorized" });
+  }
+  console.log("token", token);
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    console.log(decoded)
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+    console.log("user", user);
+    const { communityData } = req.body;
+    console.log(communityData)
+    if (!communityData?.name || !communityData?.description) {
+      return res
+        .status(400)
+        .json({ success: false, message: "name and description are required" });
+    }
+    console.log("communityData", communityData);
+    const doc = {
+      name: communityData.name,
+      description: communityData.description,
+      category: communityData.category || "general",
+      logo: communityData.logo || null,
+      coverImage: communityData.coverImage || null,
+      createdAt: new Date(),
+      createdBy: user._id,
+      mainAdmin: user._id,
+      admins: [user._id],
+      editors: [],
+      membersCount: 1,
+      privacy: communityData.privacy || "public", // public | private
+      isVerified: false,
+    };
+
+    const result = await communityCollection.insertOne(doc);
+    console.log("result", result);
+    return res.status(201).json({ success: true, id: result.insertedId });
+  } catch (error) {
+    console.error("/community-create error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// List Communities (followed-first if token provided)
+app.get("/communities", async (req, res) => {
+  try {
+    let userId = null;
+    const token = req.headers.authorization?.split(" ")[1];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const user = await usersCollections.findOne({ number: decoded.number });
+        if (user) userId = user._id;
+      } catch (_) {}
+    }
+
+    const communities = await communityCollection
+      .find({})
+      .project({
+        name: 1,
+        description: 1,
+        category: 1,
+        logo: 1,
+        coverImage: 1,
+        membersCount: 1,
+        isVerified: 1,
+      })
+      .toArray();
+
+    if (!userId) return res.json({ success: true, data: communities });
+
+    const follows = await communityFollowsCollection
+      .find({ userId })
+      .project({ communityId: 1 })
+      .toArray();
+    const followedIds = new Set(follows.map((f) => f.communityId.toString()));
+
+    const followed = [];
+    const others = [];
+    for (const c of communities) {
+      if (followedIds.has(c._id.toString())) followed.push(c);
+      else others.push(c);
+    }
+    return res.json({ success: true, data: [...followed, ...others] });
+  } catch (error) {
+    console.error("/communities error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Follow/Unfollow a community (toggle)
+app.post("/communities/:id/follow", async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res.status(401).json({ success: false, message: "Unauthorized" });
+    }
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    const communityId = req.params.id;
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(communityId);
+    } catch (_) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
+    }
+
+    const exists = await communityFollowsCollection.findOne({
+      communityId: communityObjId,
+      userId: user._id,
+    });
+
+    if (exists) {
+      await communityFollowsCollection.deleteOne({ _id: exists._id });
+      await communityCollection.updateOne(
+        { _id: communityObjId },
+        { $inc: { membersCount: -1 } }
+      );
+      return res.json({ success: true, followed: false });
+    }
+
+    await communityFollowsCollection.insertOne({
+      communityId: communityObjId,
+      userId: user._id,
+      createdAt: new Date(),
+    });
+    await communityCollection.updateOne(
+      { _id: communityObjId },
+      { $inc: { membersCount: 1 } }
+    );
+    return res.json({ success: true, followed: true });
+  } catch (error) {
+    console.error("/communities/:id/follow error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Follow status for a community
+app.get("/communities/:id/follow-status", async (req, res) => {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res.json({ success: true, followed: false });
+    }
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) return res.json({ success: true, followed: false });
+
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch (_) {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+
+    const exists = await communityFollowsCollection.findOne({
+      communityId: communityObjId,
+      userId: user._id,
+    });
+
+    return res.json({ success: true, followed: !!exists });
+  } catch (error) {
+    console.error("/communities/:id/follow-status error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get community detail (placed after DB collections are declared and other community routes)
+app.get("/communities/:id", async (req, res) => {
+  try {
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch (_) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
+    }
+
+    const community = await communityCollection.findOne({
+      _id: communityObjId,
+    });
+    if (!community) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
+    }
+
+    return res.json({ success: true, data: community });
+  } catch (error) {
+    console.error("/communities/:id error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
+const verifyToken = async (req, res, next) => {
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res.status(401).json({ message: "Unauthorized: Token missing" });
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(403).json({ message: "No User Founded" });
+    }
+
+    req.user = user; // ভবিষ্যতে রুটে ইউজার ডেটা দরকার হলে req.user থেকে নিতে পারবেন
+    next();
+  } catch (err) {
+    console.error("Auth error:", err);
+    return res.status(401).json({ message: "Unauthorized: Invalid token" });
+  }
+};
 
 app.post("/api/translate", async (req, res) => {
   const { text, targetLang } = req.body;
@@ -328,7 +1792,7 @@ app.get("/search", async (req, res) => {
 app.post("/users/register", async (req, res) => {
   try {
     const { name, email, number, password, userLocation } = req.body;
-    console.log(userLocation)
+    console.log(userLocation);
     // Check if user already exists
     const existingUser = await usersCollections.findOne({ number });
     if (existingUser) {
@@ -395,7 +1859,7 @@ app.post("/users/register", async (req, res) => {
 // User Login Route
 app.post("/users/login", async (req, res) => {
   const { number, password } = req.body;
-
+  console.log(number, password)
   // Input validation
   if (!number || !password) {
     return res
@@ -418,18 +1882,19 @@ app.post("/users/login", async (req, res) => {
         .status(401)
         .json({ success: false, message: "Invalid number or password" });
     }
-
+    console.log(JWT_SECRET)
     // Generate JWT token
     const token = jwt.sign(
       {
         id: user._id.toString(),
         number: user.number,
       },
-      JWT_SECRET, // Always keep secret in env variables
+      process.env.ACCESS_TOKEN_SECRET,
       {
         expiresIn: "30d", // human-readable format
       }
     );
+    console.log(token)
     // Respond with token and basic user info (never password!)
     res.status(200).json({
       success: true,
@@ -449,6 +1914,7 @@ app.post("/users/login", async (req, res) => {
     });
   }
 });
+
 
 // Get profile information for the logged-in user
 app.get("/profile", async (req, res) => {
@@ -1233,8 +2699,9 @@ app.post("/opinion/post", async (req, res) => {
 
 app.get("/opinion/posts", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-
+  console.log("post token",token)
   if (!token) {
+    console.log("dbcjsdcnvs.")
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
@@ -5017,7 +6484,10 @@ app.get("/seller-requests", async (req, res) => {
       return res.status(403).json({ error: "Access denied" });
     }
 
-    const requests = await sellerCollections.find().sort({createdAt: -1}).toArray();
+    const requests = await sellerCollections
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
     res.status(200).json({ success: true, requests });
   } catch (error) {
     console.error("Error fetching seller requests:", error);
@@ -5540,7 +7010,10 @@ app.get("/get-admin-products", async (req, res) => {
     }
 
     // Fetch all products for that vendor
-    const products = await productsCollection.find().sort({createdAt: -1}).toArray();
+    const products = await productsCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
 
     res.status(200).json({ success: true, products });
   } catch (error) {
@@ -5752,7 +7225,10 @@ app.get("/admin-products/orders", async (req, res) => {
     if (!user || user.role !== "admin") {
       return res.status(404).json({ error: "User not found." });
     }
-    const orders = await ordersCollection.find().sort({createdAt: -1}).toArray();
+    const orders = await ordersCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
     res.status(200).json({ success: true, orders });
   } catch (error) {
     console.error(error);
@@ -6062,8 +7538,6 @@ app.patch("/admin/banner-request/:id/status", async (req, res) => {
   }
 });
 
-
-
 app.get("/user-all/orders/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -6115,12 +7589,12 @@ app.get("/products/most-popular-category", async (req, res) => {
       .aggregate([
         {
           $group: {
-            _id: "$category",        // category অনুযায়ী group
-            count: { $sum: 1 }       // প্রতিটা category এর product সংখ্যা
-          }
+            _id: "$category", // category অনুযায়ী group
+            count: { $sum: 1 }, // প্রতিটা category এর product সংখ্যা
+          },
         },
-        { $sort: { count: -1 } },    // বেশি product আগে
-        { $limit: 1 }                // শুধু ১টা category আনবে
+        { $sort: { count: -1 } }, // বেশি product আগে
+        { $limit: 1 }, // শুধু ১টা category আনবে
       ])
       .toArray();
 
@@ -6147,7 +7621,6 @@ app.get("/products/most-popular-category", async (req, res) => {
   }
 });
 
-
 // Rating >= 4.5 হলে টপ rated products
 app.get("/products/top-rated", async (req, res) => {
   try {
@@ -6166,7 +7639,9 @@ app.get("/products/top-rated", async (req, res) => {
 
 app.get("/products/featured", async (req, res) => {
   try {
-    const products = await productsCollection.find({ isFeatured: true }).toArray();
+    const products = await productsCollection
+      .find({ isFeatured: true })
+      .toArray();
     res.json({ success: true, products });
   } catch (err) {
     res.status(500).json({ message: "Internal Server Error" });
@@ -6184,17 +7659,22 @@ app.get("/products/high-discounts", async (req, res) => {
               $round: [
                 {
                   $multiply: [
-                    { $divide: [{ $subtract: ["$price", "$discountPrice"] }, "$price"] },
-                    100
-                  ]
+                    {
+                      $divide: [
+                        { $subtract: ["$price", "$discountPrice"] },
+                        "$price",
+                      ],
+                    },
+                    100,
+                  ],
                 },
-                0
-              ]
-            }
-          }
+                0,
+              ],
+            },
+          },
         },
         { $sort: { discountPercent: -1 } },
-        { $limit: 5 }
+        { $limit: 5 },
       ])
       .toArray();
 
@@ -6205,6 +7685,48 @@ app.get("/products/high-discounts", async (req, res) => {
   }
 });
 
+// Upload video to Cloudinary
+app.post("/upload/video", videoUpload.single("video"), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "No video file uploaded" });
+    }
+
+    // Cloudinary automatically uploads and returns the URL
+    const videoUrl = req.file.path;
+    const publicId = req.file.filename;
+
+    return res.status(200).json({
+      success: true,
+      message: "Video uploaded successfully",
+      videoUrl,
+      publicId,
+      duration: req.file.duration || null,
+      format: req.file.format || null,
+    });
+  } catch (error) {
+    console.error("POST /upload/video error:", error);
+    return res.status(500).json({ success: false, message: "Failed to upload video" });
+  }
+});
+
+// Delete video from Cloudinary (optional)
+app.delete("/upload/video/:publicId", async (req, res) => {
+  try {
+    const { publicId } = req.params;
+    const decodedPublicId = decodeURIComponent(publicId);
+
+    await cloudinary.uploader.destroy(decodedPublicId, { resource_type: "video" });
+
+    return res.status(200).json({
+      success: true,
+      message: "Video deleted successfully",
+    });
+  } catch (error) {
+    console.error("DELETE /upload/video/:publicId error:", error);
+    return res.status(500).json({ success: false, message: "Failed to delete video" });
+  }
+});
 
 const server = app.listen(port, () => {
   console.log(`Server running http://localhost:${port}`);

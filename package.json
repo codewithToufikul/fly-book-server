@@ -27,7 +27,9 @@
     "nodemailer": "^6.9.16",
     "nodemon": "^3.1.9",
     "pdf-parse": "^1.1.1",
+    "pdfkit": "^0.17.2",
     "socket.io": "^4.8.1",
+    "stream": "^0.0.3",
     "twilio": "^5.4.0"
   }
 }
