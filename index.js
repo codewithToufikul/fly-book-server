@@ -26,7 +26,7 @@ try {
 } catch (_) {}
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 // Middleware
 app.use(
   cors({
@@ -1648,58 +1648,66 @@ app.get("/search", async (req, res) => {
     const regex = new RegExp(searchQuery, "i");
     let websiteResults = {};
     let aiResult = "No AI result found";
-    // ✅ Fetch AI-generated result from Hugging Face
+    // ✅ Fetch AI-generated result from Hugging Face (concise 2–3 lines like Google definition)
     try {
-      const response = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${process.env.GMINI_API_KEY}`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            contents: [
-              {
-                parts: [
-                  {
-                    text: `Define in 2-3 brief sentences: ${searchQuery}`,
-                  },
-                ],
+      const MODELS = [
+        "google/flan-t5-large",
+        "tiiuae/falcon-7b-instruct",
+        "google/gemma-7b-it",
+        "mistralai/Mistral-7B-Instruct-v0.2",
+      ];
+      const prompt = `Provide a concise 2-3 sentence definition for: \"${searchQuery}\". Keep it short and clear.`;
+      let got = false;
+      for (const HF_MODEL of MODELS) {
+        const response = await fetch(`https://api-inference.huggingface.co/models/${HF_MODEL}?wait_for_model=true`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${HUGGING_FACE_API_KEY}`,
+            },
+            body: JSON.stringify({
+              inputs: prompt,
+              parameters: {
+                max_new_tokens: 120,
+                temperature: 0.6,
+                return_full_text: false,
               },
-            ],
-          }),
+            }),
+          }
+        );
+        const contentType = response.headers.get("content-type") || "";
+        if (!response.ok) {
+          const errText = await response.text().catch(() => "");
+          console.error("HF HTTP Error (", HF_MODEL, "):", response.status, errText);
+          continue; // try next model
         }
-      );
-
-      // Check if the response is JSON
-      const contentType = response.headers.get("Content-Type");
-      if (contentType && contentType.includes("application/json")) {
-        const data = await response.json(); // Parse the response JSON
-
-        if (
-          data &&
-          data.candidates &&
-          data.candidates[0] &&
-          data.candidates[0].content &&
-          data.candidates[0].content.parts &&
-          data.candidates[0].content.parts[0] &&
-          data.candidates[0].content.parts[0].text
-        ) {
-          aiResult = data.candidates[0].content.parts[0].text; // Extract response text
-        } else if (data.error) {
-          console.error("Gemini API Error:", data.error);
-          aiResult = "Failed to fetch AI result. Please try again later.";
+        if (!contentType.includes("application/json")) {
+          const txt = await response.text().catch(() => "");
+          console.error("HF Non-JSON Response (", HF_MODEL, "):", contentType, txt);
+          continue;
+        }
+        const data = await response.json();
+        if (Array.isArray(data) && data[0]?.generated_text) {
+          aiResult = String(data[0].generated_text).trim();
+          got = true; break;
+        } else if (data?.generated_text) {
+          aiResult = String(data.generated_text).trim();
+          got = true; break;
+        } else if (data?.error) {
+          console.error("HF Model Error (", HF_MODEL, "):", data.error);
+          continue;
         } else {
-          aiResult = "No response from AI.";
+          console.error("HF Unexpected JSON shape (", HF_MODEL, "):", data);
+          continue;
         }
-      } else {
-        const errorText = await response.text(); // Read error response
-        console.error("Error from Gemini API:", errorText);
-        aiResult = "Failed to fetch AI result. Please try again later.";
+      }
+      if (!got) {
+        aiResult = "AI result unavailable at the moment.";
       }
     } catch (error) {
-      console.error("Gemini API Error:", error);
-      aiResult = "No AI result found"; // Fallback message
+      console.error("Hugging Face API Error:", error);
+      aiResult = "No AI result found"; // Fallback
     }
 
     // ✅ Fetch website users
