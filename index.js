@@ -190,6 +190,90 @@ app.use(async (req, res, next) => {
   }
 });
 
+// Edit a post (author or community admins/editors)
+app.put("/posts/:postId", verifyTokenEarly, async (req, res) => {
+  try {
+    let postObjId;
+    try { postObjId = new ObjectId(req.params.postId); } catch {
+      return res.status(400).json({ success: false, message: "Invalid post id" });
+    }
+
+    const post = await communityPostsCollection.findOne({ _id: postObjId });
+    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+
+    // Permission: author or community admins/editors
+    const role = await getCommunityRole(req.user._id, post.communityId.toString());
+    const isAuthor = post.authorId?.toString() === req.user._id?.toString();
+    if (!(isAuthor || role.isMainAdmin || role.isAdmin || role.isEditor)) {
+      return res.status(403).json({ success: false, message: "Insufficient permissions" });
+    }
+
+    const allowed = ["title", "description", "visibility", "accessCode"]; // common fields
+    // Allow content edit for non-course posts
+    if (post.type !== "course") allowed.push("content");
+    const $set = {};
+    for (const k of allowed) {
+      if (k in req.body) $set[k] = req.body[k];
+    }
+    if (!Object.keys($set).length) {
+      return res.status(400).json({ success: false, message: "No updatable fields provided" });
+    }
+
+    await communityPostsCollection.updateOne({ _id: postObjId }, { $set });
+    const updated = await communityPostsCollection.findOne({ _id: postObjId });
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    console.error("PUT /posts/:postId error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Delete a post (author or community admins/editors) with cascade cleanup
+app.delete("/posts/:postId", verifyTokenEarly, async (req, res) => {
+  try {
+    let postObjId;
+    try { postObjId = new ObjectId(req.params.postId); } catch {
+      return res.status(400).json({ success: false, message: "Invalid post id" });
+    }
+
+    const post = await communityPostsCollection.findOne({ _id: postObjId });
+    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+
+    const role = await getCommunityRole(req.user._id, post.communityId.toString());
+    const isAuthor = post.authorId?.toString() === req.user._id?.toString();
+    if (!(isAuthor || role.isMainAdmin || role.isAdmin || role.isEditor)) {
+      return res.status(403).json({ success: false, message: "Insufficient permissions" });
+    }
+
+    // Cascade: delete likes
+    await communityPostLikesCollection.deleteMany({ postId: postObjId });
+
+    // If course post, cleanup related collections
+    if (post.type === "course") {
+      const course = await communityCoursesCollection.findOne({ postId: postObjId });
+      if (course) {
+        const courseId = course._id;
+        await Promise.all([
+          communityLessonsCollection.deleteMany({ courseId }),
+          communityChaptersCollection.deleteMany({ courseId }),
+          communityExamsCollection.deleteMany({ courseId }),
+          communityExamAttemptsCollection.deleteMany({ courseId }),
+          communityEnrollmentsCollection.deleteMany({ courseId }),
+          communityProgressCollection.deleteMany({ courseId }),
+          communityCertificatesCollection.deleteMany({ courseId }),
+        ]);
+        await communityCoursesCollection.deleteOne({ _id: courseId });
+      }
+    }
+
+    await communityPostsCollection.deleteOne({ _id: postObjId });
+    return res.json({ success: true });
+  } catch (error) {
+    console.error("DELETE /posts/:postId error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
 // Upload audio (listening responses) to Cloudinary
 app.post("/upload/audio", audioUpload.single("audio"), async (req, res) => {
   try {
@@ -617,6 +701,40 @@ app.post("/communities/:id/posts", verifyTokenEarly, async (req, res) => {
     return res.status(201).json({ success: true, postId: postResult.insertedId, courseId: courseResult.insertedId });
   } catch (error) {
     console.error("POST /communities/:id/posts error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Update community details (name, description, logo, coverImage) - mainAdmin only
+app.patch("/communities/:id", verifyTokenEarly, async (req, res) => {
+  try {
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+
+    const community = await communityCollection.findOne({ _id: communityObjId });
+    if (!community) return res.status(404).json({ success: false, message: "Community not found" });
+    if (community.mainAdmin?.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Only owner can update community" });
+    }
+
+    const allowed = ["name", "description", "logo", "coverImage"];
+    const $set = {};
+    for (const k of allowed) {
+      if (k in req.body) $set[k] = req.body[k];
+    }
+    if (!Object.keys($set).length) {
+      return res.status(400).json({ success: false, message: "No updatable fields provided" });
+    }
+
+    await communityCollection.updateOne({ _id: communityObjId }, { $set });
+    const updated = await communityCollection.findOne({ _id: communityObjId });
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    console.error("PATCH /communities/:id error:", error);
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
