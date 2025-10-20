@@ -26,7 +26,7 @@ try {
 } catch (_) {}
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 // Middleware
 app.use(
   cors({
@@ -1766,18 +1766,11 @@ app.get("/search", async (req, res) => {
     const regex = new RegExp(searchQuery, "i");
     let websiteResults = {};
     let aiResult = "No AI result found";
-    // ✅ Fetch AI-generated result from Hugging Face (concise 2–3 lines like Google definition)
+    // ✅ Fetch AI-generated result using Hugging Face Router API
     try {
-      const MODELS = [
-        "google/flan-t5-large",
-        "tiiuae/falcon-7b-instruct",
-        "google/gemma-7b-it",
-        "mistralai/Mistral-7B-Instruct-v0.2",
-      ];
-      const prompt = `Provide a concise 2-3 sentence definition for: \"${searchQuery}\". Keep it short and clear.`;
-      let got = false;
-      for (const HF_MODEL of MODELS) {
-        const response = await fetch(`https://api-inference.huggingface.co/models/${HF_MODEL}?wait_for_model=true`,
+      if (HUGGING_FACE_API_KEY) {
+        const response = await fetch(
+          "https://router.huggingface.co/v1/chat/completions",
           {
             method: "POST",
             headers: {
@@ -1785,48 +1778,32 @@ app.get("/search", async (req, res) => {
               Authorization: `Bearer ${HUGGING_FACE_API_KEY}`,
             },
             body: JSON.stringify({
-              inputs: prompt,
-              parameters: {
-                max_new_tokens: 120,
-                temperature: 0.6,
-                return_full_text: false,
-              },
+              model: "meta-llama/Llama-3.1-8B-Instruct:novita",
+              messages: [
+                {
+                  role: "user",
+                  content: `Provide a concise 2-3 sentence definition or explanation for: "${searchQuery}". Keep it brief and informative.`,
+                },
+              ],
+              max_tokens: 150,
+              temperature: 0.7,
             }),
           }
         );
-        const contentType = response.headers.get("content-type") || "";
-        if (!response.ok) {
-          const errText = await response.text().catch(() => "");
-          console.error("HF HTTP Error (", HF_MODEL, "):", response.status, errText);
-          continue; // try next model
-        }
-        if (!contentType.includes("application/json")) {
-          const txt = await response.text().catch(() => "");
-          console.error("HF Non-JSON Response (", HF_MODEL, "):", contentType, txt);
-          continue;
-        }
-        const data = await response.json();
-        if (Array.isArray(data) && data[0]?.generated_text) {
-          aiResult = String(data[0].generated_text).trim();
-          got = true; break;
-        } else if (data?.generated_text) {
-          aiResult = String(data.generated_text).trim();
-          got = true; break;
-        } else if (data?.error) {
-          console.error("HF Model Error (", HF_MODEL, "):", data.error);
-          continue;
+
+        if (response.ok) {
+          const data = await response.json();
+          if (data?.choices?.[0]?.message?.content) {
+            aiResult = data.choices[0].message.content.trim();
+          }
         } else {
-          console.error("HF Unexpected JSON shape (", HF_MODEL, "):", data);
-          continue;
+          console.error("HF Router API Error:", response.status, await response.text());
         }
-      }
-      if (!got) {
-        aiResult = "AI result unavailable at the moment.";
       }
     } catch (error) {
-      console.error("Hugging Face API Error:", error);
-      aiResult = "No AI result found"; // Fallback
+      console.error("HF Router API Error:", error.message);
     }
+
 
     // ✅ Fetch website users
     try {
