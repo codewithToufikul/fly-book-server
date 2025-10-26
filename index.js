@@ -26,7 +26,7 @@ try {
 } catch (_) {}
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 // Middleware
 app.use(
   cors({
@@ -7944,6 +7944,305 @@ io.on("connection", (socket) => {
   socket.on("disconnect", () => {
     console.log("A user disconnected:", socket.id);
   });
+});
+
+// =====================
+// ADMIN COMMUNITY MANAGEMENT ENDPOINTS
+// =====================
+
+// Get all communities with stats (admin only)
+app.get("/admin/communities", verifyToken, async (req, res) => {
+  try {
+    // Check if user is admin
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    const communities = await communityCollection.find({}).sort({ createdAt: -1 }).toArray();
+    
+    // Enrich with stats
+    const enriched = await Promise.all(
+      communities.map(async (comm) => {
+        const postsCount = await communityPostsCollection.countDocuments({ communityId: comm._id });
+        const coursesCount = await communityCoursesCollection.countDocuments({ communityId: comm._id });
+        const followsCount = await communityFollowsCollection.countDocuments({ communityId: comm._id });
+        
+        // Get owner info
+        const owner = await usersCollections.findOne(
+          { _id: comm.mainAdmin },
+          { projection: { name: 1, number: 1, email: 1 } }
+        );
+
+        return {
+          ...comm,
+          postsCount,
+          coursesCount,
+          membersCount: followsCount,
+          owner
+        };
+      })
+    );
+
+    return res.json({ success: true, data: enriched });
+  } catch (error) {
+    console.error("GET /admin/communities error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get community details with all posts and courses (admin only)
+app.get("/admin/communities/:id/details", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+
+    const community = await communityCollection.findOne({ _id: communityObjId });
+    if (!community) {
+      return res.status(404).json({ success: false, message: "Community not found" });
+    }
+
+    // Get all posts
+    const posts = await communityPostsCollection.find({ communityId: communityObjId }).sort({ createdAt: -1 }).toArray();
+    
+    // Enrich posts with author info and stats
+    const enrichedPosts = await Promise.all(
+      posts.map(async (post) => {
+        const author = await usersCollections.findOne(
+          { _id: post.authorId },
+          { projection: { name: 1, number: 1, image: 1 } }
+        );
+        
+        const likesCount = await communityPostLikesCollection.countDocuments({ postId: post._id });
+        
+        let courseInfo = null;
+        if (post.type === "course") {
+          const course = await communityCoursesCollection.findOne({ postId: post._id });
+          if (course) {
+            const enrollmentsCount = await communityEnrollmentsCollection.countDocuments({ courseId: course._id });
+            const chaptersCount = await communityChaptersCollection.countDocuments({ courseId: course._id });
+            const lessonsCount = await communityLessonsCollection.countDocuments({ courseId: course._id });
+            
+            courseInfo = {
+              courseId: course._id,
+              enrollmentsCount,
+              chaptersCount,
+              lessonsCount
+            };
+          }
+        }
+
+        return {
+          ...post,
+          author,
+          likesCount,
+          courseInfo
+        };
+      })
+    );
+
+    // Get members
+    const follows = await communityFollowsCollection.find({ communityId: communityObjId }).toArray();
+    const memberIds = follows.map(f => f.userId);
+    const members = await usersCollections.find(
+      { _id: { $in: memberIds } },
+      { projection: { name: 1, number: 1, image: 1, email: 1 } }
+    ).toArray();
+
+    return res.json({
+      success: true,
+      data: {
+        community,
+        posts: enrichedPosts,
+        members
+      }
+    });
+  } catch (error) {
+    console.error("GET /admin/communities/:id/details error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Delete community (admin only) - cascade delete all related data
+app.delete("/admin/communities/:id", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+
+    const community = await communityCollection.findOne({ _id: communityObjId });
+    if (!community) {
+      return res.status(404).json({ success: false, message: "Community not found" });
+    }
+
+    // Get all posts
+    const posts = await communityPostsCollection.find({ communityId: communityObjId }).toArray();
+    const postIds = posts.map(p => p._id);
+
+    // Get all courses
+    const courses = await communityCoursesCollection.find({ communityId: communityObjId }).toArray();
+    const courseIds = courses.map(c => c._id);
+
+    // Cascade delete everything
+    await Promise.all([
+      // Delete posts and likes
+      communityPostsCollection.deleteMany({ communityId: communityObjId }),
+      communityPostLikesCollection.deleteMany({ postId: { $in: postIds } }),
+      
+      // Delete courses and related data
+      communityCoursesCollection.deleteMany({ communityId: communityObjId }),
+      communityChaptersCollection.deleteMany({ courseId: { $in: courseIds } }),
+      communityLessonsCollection.deleteMany({ courseId: { $in: courseIds } }),
+      communityExamsCollection.deleteMany({ courseId: { $in: courseIds } }),
+      communityExamAttemptsCollection.deleteMany({ courseId: { $in: courseIds } }),
+      communityEnrollmentsCollection.deleteMany({ courseId: { $in: courseIds } }),
+      communityProgressCollection.deleteMany({ courseId: { $in: courseIds } }),
+      communityCertificatesCollection.deleteMany({ courseId: { $in: courseIds } }),
+      
+      // Delete follows
+      communityFollowsCollection.deleteMany({ communityId: communityObjId }),
+      
+      // Finally delete community
+      communityCollection.deleteOne({ _id: communityObjId })
+    ]);
+
+    return res.json({ success: true, message: "Community and all related data deleted" });
+  } catch (error) {
+    console.error("DELETE /admin/communities/:id error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Toggle community verification (admin only)
+app.patch("/admin/communities/:id/verify", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    let communityObjId;
+    try {
+      communityObjId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid community id" });
+    }
+
+    const community = await communityCollection.findOne({ _id: communityObjId });
+    if (!community) {
+      return res.status(404).json({ success: false, message: "Community not found" });
+    }
+
+    const newVerifiedStatus = !community.isVerified;
+    await communityCollection.updateOne(
+      { _id: communityObjId },
+      { $set: { isVerified: newVerifiedStatus, updatedAt: new Date() } }
+    );
+
+    return res.json({ success: true, isVerified: newVerifiedStatus });
+  } catch (error) {
+    console.error("PATCH /admin/communities/:id/verify error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Delete post (admin override)
+app.delete("/admin/posts/:postId", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    let postObjId;
+    try {
+      postObjId = new ObjectId(req.params.postId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid post id" });
+    }
+
+    const post = await communityPostsCollection.findOne({ _id: postObjId });
+    if (!post) {
+      return res.status(404).json({ success: false, message: "Post not found" });
+    }
+
+    // Cascade delete
+    await communityPostLikesCollection.deleteMany({ postId: postObjId });
+
+    if (post.type === "course") {
+      const course = await communityCoursesCollection.findOne({ postId: postObjId });
+      if (course) {
+        const courseId = course._id;
+        await Promise.all([
+          communityLessonsCollection.deleteMany({ courseId }),
+          communityChaptersCollection.deleteMany({ courseId }),
+          communityExamsCollection.deleteMany({ courseId }),
+          communityExamAttemptsCollection.deleteMany({ courseId }),
+          communityEnrollmentsCollection.deleteMany({ courseId }),
+          communityProgressCollection.deleteMany({ courseId }),
+          communityCertificatesCollection.deleteMany({ courseId }),
+          communityCoursesCollection.deleteOne({ _id: courseId })
+        ]);
+      }
+    }
+
+    await communityPostsCollection.deleteOne({ _id: postObjId });
+    return res.json({ success: true, message: "Post deleted" });
+  } catch (error) {
+    console.error("DELETE /admin/posts/:postId error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get community statistics (admin only)
+app.get("/admin/communities/stats", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    const totalCommunities = await communityCollection.countDocuments({});
+    const verifiedCommunities = await communityCollection.countDocuments({ isVerified: true });
+    const totalPosts = await communityPostsCollection.countDocuments({});
+    const totalCourses = await communityCoursesCollection.countDocuments({});
+    const totalEnrollments = await communityEnrollmentsCollection.countDocuments({});
+    const totalFollows = await communityFollowsCollection.countDocuments({});
+
+    // Get recent communities
+    const recentCommunities = await communityCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .toArray();
+
+    return res.json({
+      success: true,
+      data: {
+        totalCommunities,
+        verifiedCommunities,
+        totalPosts,
+        totalCourses,
+        totalEnrollments,
+        totalFollows,
+        recentCommunities
+      }
+    });
+  } catch (error) {
+    console.error("GET /admin/communities/stats error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
 });
 
 // Start the serve
