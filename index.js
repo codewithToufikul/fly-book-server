@@ -7837,10 +7837,12 @@ const server = app.listen(port, () => {
 
 const io = new Server(server, {
   cors: {
-    origin: ["https://flybook.com.bd", "https://flybook-f23c5.web.app"], // আপনার ফ্রন্টএন্ডের পোর্ট
+    origin: ["https://flybook.com.bd", "https://flybook-f23c5.web.app", "http://localhost:5173"],
     methods: ["GET", "POST"],
     credentials: true,
   },
+  transports: ["websocket", "polling"], // Enable both transports
+  allowEIO3: true, // Enable compatibility with older clients
 });
 
 io.on("connection", (socket) => {
