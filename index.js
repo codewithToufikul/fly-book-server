@@ -26,7 +26,7 @@ try {
 } catch (_) {}
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 // Middleware
 app.use(
   cors({
@@ -341,6 +341,152 @@ app.get("/courses/:courseId/attempts", verifyTokenEarly, async (req, res) => {
     return res.json({ success: true, data: enriched });
   } catch (error) {
     console.error("GET /courses/:courseId/attempts error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get comprehensive student dashboard statistics for a course (owner/admin only)
+app.get("/courses/:courseId/student-dashboard", verifyTokenEarly, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    let courseObjId;
+    try { courseObjId = new ObjectId(courseId); } catch {
+      return res.status(400).json({ success: false, message: "Invalid course id" });
+    }
+
+    // Load course and post to determine owner and community
+    const course = await communityCoursesCollection.findOne({ _id: courseObjId }, { projection: { postId: 1, communityId: 1, title: 1 } });
+    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+    const post = await communityPostsCollection.findOne({ _id: course.postId }, { projection: { authorId: 1 } });
+    if (!post) return res.status(404).json({ success: false, message: "Course post not found" });
+
+    // Check authorization
+    const isOwner = post.authorId?.toString() === req.user._id?.toString();
+    const role = await getCommunityRole(req.user._id, course.communityId.toString());
+    const isCommunityAdmin = role.isMainAdmin || role.isAdmin;
+    if (!isOwner && !isCommunityAdmin) {
+      return res.status(403).json({ success: false, message: "Not authorized to view student dashboard for this course" });
+    }
+
+    // Get all exam attempts for this course
+    const allAttempts = await communityExamAttemptsCollection
+      .find({ courseId: courseObjId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Get all exams for this course
+    const exams = await communityExamsCollection.find({ courseId: courseObjId }).toArray();
+    const chapters = await communityChaptersCollection.find({ courseId: courseObjId }).sort({ order: 1 }).toArray();
+
+    // Get unique students who attempted exams
+    const studentIds = [...new Set(allAttempts.map(att => att.userId.toString()))];
+    const students = await usersCollections.find({ _id: { $in: studentIds.map(id => new ObjectId(id)) } })
+      .project({ _id: 1, name: 1, number: 1, profileImage: 1 })
+      .toArray();
+
+    // Get all course progress records
+    const progressRecords = await communityProgressCollection.find({ courseId: courseObjId }).toArray();
+
+    // Build student statistics
+    const studentStats = students.map(student => {
+      const studentAttempts = allAttempts.filter(att => att.userId.toString() === student._id.toString());
+      const studentProgress = progressRecords.find(p => p.userId.toString() === student._id.toString());
+
+      // Group attempts by exam
+      const attemptsByExam = {};
+      studentAttempts.forEach(att => {
+        const examId = att.examId.toString();
+        if (!attemptsByExam[examId]) attemptsByExam[examId] = [];
+        attemptsByExam[examId].push(att);
+      });
+
+      // Calculate statistics
+      const totalAttempts = studentAttempts.length;
+      const gradedAttempts = studentAttempts.filter(att => att.graded === true);
+      const passedAttempts = gradedAttempts.filter(att => att.passed === true);
+      const failedAttempts = gradedAttempts.filter(att => att.passed === false);
+      const pendingGrading = studentAttempts.filter(att => att.graded === false);
+
+      // Calculate average score (only for graded attempts with scores)
+      const scoredAttempts = gradedAttempts.filter(att => att.score !== null && att.score !== undefined);
+      const averageScore = scoredAttempts.length > 0 
+        ? Math.round(scoredAttempts.reduce((sum, att) => sum + att.score, 0) / scoredAttempts.length)
+        : null;
+
+      // Get latest attempt for each exam
+      const examResults = exams.map(exam => {
+        const examAttempts = attemptsByExam[exam._id.toString()] || [];
+        const latestAttempt = examAttempts.length > 0 ? examAttempts[0] : null;
+        const chapter = chapters.find(ch => ch._id.toString() === exam.chapterId.toString());
+
+        return {
+          examId: exam._id,
+          examType: exam.type,
+          chapterTitle: chapter?.title || 'Unknown Chapter',
+          chapterOrder: chapter?.order || 0,
+          attemptCount: examAttempts.length,
+          latestAttempt: latestAttempt ? {
+            attemptId: latestAttempt._id,
+            score: latestAttempt.score,
+            passed: latestAttempt.passed,
+            graded: latestAttempt.graded,
+            createdAt: latestAttempt.createdAt,
+            correctAnswers: latestAttempt.correctAnswers,
+            totalQuestions: latestAttempt.totalQuestions,
+          } : null
+        };
+      });
+
+      // Course completion status
+      const completedLessons = studentProgress?.completedLessons?.length || 0;
+      const hasCertificate = studentProgress?.certificateIssued || false;
+
+      return {
+        student: {
+          id: student._id,
+          name: student.name,
+          number: student.number,
+          profileImage: student.profileImage,
+        },
+        statistics: {
+          totalAttempts,
+          passedAttempts: passedAttempts.length,
+          failedAttempts: failedAttempts.length,
+          pendingGrading: pendingGrading.length,
+          averageScore,
+          completedLessons,
+          hasCertificate,
+        },
+        examResults,
+        lastActivity: studentAttempts.length > 0 ? studentAttempts[0].createdAt : null,
+      };
+    });
+
+    // Overall course statistics
+    const overallStats = {
+      totalStudents: students.length,
+      totalAttempts: allAttempts.length,
+      totalExams: exams.length,
+      totalChapters: chapters.length,
+      gradedAttempts: allAttempts.filter(att => att.graded === true).length,
+      pendingGrading: allAttempts.filter(att => att.graded === false).length,
+      passRate: allAttempts.filter(att => att.graded === true).length > 0
+        ? Math.round((allAttempts.filter(att => att.passed === true).length / allAttempts.filter(att => att.graded === true).length) * 100)
+        : 0,
+      certificatesIssued: progressRecords.filter(p => p.certificateIssued === true).length,
+    };
+
+    return res.json({
+      success: true,
+      data: {
+        courseId: course._id,
+        courseTitle: course.title,
+        overallStats,
+        students: studentStats,
+      }
+    });
+  } catch (error) {
+    console.error("GET /courses/:courseId/student-dashboard error:", error);
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
