@@ -690,6 +690,13 @@ const communityProgressCollection = db.collection(
 const communityEnrollmentsCollection = db.collection(
   "communityEnrollmentsCollection"
 );
+// Jobs & Employment collections
+const jobsCollection = db.collection("jobsCollection");
+const jobApplicationsCollection = db.collection("jobApplicationsCollection");
+const employersCollection = db.collection("employersCollection");
+// Freelance Marketplace collections
+const projectsCollection = db.collection("projectsCollection");
+const proposalsCollection = db.collection("proposalsCollection");
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -7894,6 +7901,547 @@ app.get("/products/featured", async (req, res) => {
     res.json({ success: true, products });
   } catch (err) {
     res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+// =====================
+// Jobs and Employment APIs
+// =====================
+
+// Employer: apply for posting permission
+app.post("/employers/apply", verifyTokenEarly, async (req, res) => {
+  try {
+    const { companyName, companyWebsite, companyLocation, description } = req.body || {};
+    if (!companyName) {
+      return res.status(400).json({ success: false, message: "companyName is required" });
+    }
+    const existing = await employersCollection.findOne({ userId: req.user._id });
+    if (existing) {
+      return res.status(200).json({ success: true, message: "Application already submitted", data: existing });
+    }
+    const doc = {
+      userId: req.user._id,
+      companyName,
+      companyWebsite: companyWebsite || "",
+      companyLocation: companyLocation || "",
+      description: description || "",
+      approved: false,
+      status: "pending",
+      createdAt: new Date(),
+    };
+    const result = await employersCollection.insertOne(doc);
+    return res.json({ success: true, data: { _id: result.insertedId, ...doc } });
+  } catch (e) {
+    console.error("POST /employers/apply", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Employer: status
+app.get("/employers/status", verifyTokenEarly, async (req, res) => {
+  try {
+    const employer = await employersCollection.findOne({ userId: req.user._id });
+    return res.json({ success: true, approved: !!employer?.approved, status: employer?.status || "none", employer });
+  } catch (e) {
+    console.error("GET /employers/status", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Admin: list employer requests (reuse role field if available; here simple guard by role === 'admin')
+app.get("/admin/employers/requests", verifyTokenEarly, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ success: false, message: "Forbidden" });
+    const items = await employersCollection.find({ status: "pending" }).sort({ createdAt: -1 }).toArray();
+    return res.json({ success: true, data: items });
+  } catch (e) {
+    console.error("GET /admin/employers/requests", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.patch("/admin/employers/:id/approve", verifyTokenEarly, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ success: false, message: "Forbidden" });
+    const { id } = req.params;
+    const result = await employersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { approved: true, status: "approved", approvedAt: new Date(), approvedBy: req.user._id } }
+    );
+    if (!result.matchedCount) return res.status(404).json({ success: false, message: "Request not found" });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("PATCH /admin/employers/:id/approve", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+app.patch("/admin/employers/:id/reject", verifyTokenEarly, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") return res.status(403).json({ success: false, message: "Forbidden" });
+    const { id } = req.params;
+    const { reason } = req.body || {};
+    const result = await employersCollection.updateOne(
+      { _id: new ObjectId(id) },
+      { $set: { approved: false, status: "rejected", rejectedAt: new Date(), rejectedBy: req.user._id, reason: reason || "" } }
+    );
+    if (!result.matchedCount) return res.status(404).json({ success: false, message: "Request not found" });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("PATCH /admin/employers/:id/reject", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Helper: ensure employer approved
+async function ensureEmployerApproved(userId) {
+  const emp = await employersCollection.findOne({ userId: new ObjectId(userId) });
+  return !!emp?.approved;
+}
+
+// Create a job (employer only)
+app.post("/jobs", verifyTokenEarly, async (req, res) => {
+  try {
+    const isApproved = await employersCollection.findOne({ userId: req.user._id, approved: true });
+    if (!isApproved) return res.status(403).json({ success: false, message: "Employer approval required" });
+    const {
+      title, description, category, location, jobType, experienceLevel,
+      salaryMin, salaryMax, skills, deadline
+    } = req.body || {};
+    if (!title || !description) {
+      return res.status(400).json({ success: false, message: "title and description are required" });
+    }
+    const job = {
+      title,
+      description,
+      category: category || "",
+      location: location || "",
+      jobType: jobType || "Full-time",
+      experienceLevel: experienceLevel || "Any",
+      salaryMin: salaryMin ? Number(salaryMin) : null,
+      salaryMax: salaryMax ? Number(salaryMax) : null,
+      skills: Array.isArray(skills) ? skills : [],
+      deadline: deadline ? new Date(deadline) : null,
+      postedBy: req.user._id,
+      status: "open",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      views: 0,
+      applicationsCount: 0,
+    };
+    const result = await jobsCollection.insertOne(job);
+    return res.json({ success: true, data: { _id: result.insertedId, ...job } });
+  } catch (e) {
+    console.error("POST /jobs", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// List jobs with filters and pagination
+app.get("/jobs", async (req, res) => {
+  try {
+    const { q, category, location, jobType, experienceLevel, minSalary, maxSalary, page = 1, limit = 10 } = req.query || {};
+    const query = { status: "open" };
+    if (q) query.title = { $regex: q, $options: "i" };
+    if (category) query.category = category;
+    if (location) query.location = { $regex: location, $options: "i" };
+    if (jobType) query.jobType = jobType;
+    if (experienceLevel) query.experienceLevel = experienceLevel;
+    if (minSalary) query.salaryMin = { $gte: Number(minSalary) };
+    if (maxSalary) query.salaryMax = { ...(query.salaryMax || {}), $lte: Number(maxSalary) };
+    const skip = (Number(page) - 1) * Number(limit);
+    const cursor = jobsCollection.find(query).sort({ createdAt: -1 }).skip(skip).limit(Number(limit));
+    const [items, total] = await Promise.all([cursor.toArray(), jobsCollection.countDocuments(query)]);
+    return res.json({ success: true, data: items, pagination: { page: Number(page), limit: Number(limit), total } });
+  } catch (e) {
+    console.error("GET /jobs", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Job detail
+app.get("/jobs/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    let objId;
+    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    const job = await jobsCollection.findOne({ _id: objId });
+    if (!job) return res.status(404).json({ success: false, message: "Job not found" });
+    await jobsCollection.updateOne({ _id: objId }, { $inc: { views: 1 } });
+    return res.json({ success: true, data: job });
+  } catch (e) {
+    console.error("GET /jobs/:id", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Update/close job (employer)
+app.patch("/jobs/:id", verifyTokenEarly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    let objId;
+    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    const job = await jobsCollection.findOne({ _id: objId });
+    if (!job) return res.status(404).json({ success: false, message: "Job not found" });
+    if (job.postedBy.toString() !== req.user._id.toString()) return res.status(403).json({ success: false, message: "Forbidden" });
+    const allowed = ["title", "description", "category", "location", "jobType", "experienceLevel", "salaryMin", "salaryMax", "skills", "deadline", "status"];
+    const $set = { updatedAt: new Date() };
+    for (const key of allowed) {
+      if (key in req.body) $set[key] = key.includes("salary") ? Number(req.body[key]) : req.body[key];
+    }
+    await jobsCollection.updateOne({ _id: objId }, { $set });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("PATCH /jobs/:id", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Apply to job
+app.post("/jobs/:id/apply", verifyTokenEarly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    let objId;
+    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    const job = await jobsCollection.findOne({ _id: objId });
+    if (!job || job.status !== "open") return res.status(404).json({ success: false, message: "Job not open" });
+    const { cvUrl, coverLetter } = req.body || {};
+    const exists = await jobApplicationsCollection.findOne({ jobId: objId, userId: req.user._id });
+    if (exists) return res.status(200).json({ success: true, message: "Already applied" });
+    const appDoc = {
+      jobId: objId,
+      userId: req.user._id,
+      cvUrl: cvUrl || "",
+      coverLetter: coverLetter || "",
+      status: "applied",
+      createdAt: new Date(),
+    };
+    await jobApplicationsCollection.insertOne(appDoc);
+    await jobsCollection.updateOne({ _id: objId }, { $inc: { applicationsCount: 1 } });
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("POST /jobs/:id/apply", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Applicant: my applications
+app.get("/my-applications", verifyTokenEarly, async (req, res) => {
+  try {
+    const apps = await jobApplicationsCollection
+      .aggregate([
+        { $match: { userId: req.user._id } },
+        { $lookup: { from: "jobsCollection", localField: "jobId", foreignField: "_id", as: "job" } },
+        { $unwind: "$job" },
+        { $sort: { createdAt: -1 } },
+      ])
+      .toArray();
+    return res.json({ success: true, data: apps });
+  } catch (e) {
+    console.error("GET /my-applications", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Employer: my jobs
+app.get("/employer/jobs", verifyTokenEarly, async (req, res) => {
+  try {
+    const isApproved = await employersCollection.findOne({ userId: req.user._id, approved: true });
+    if (!isApproved) return res.status(403).json({ success: false, message: "Employer approval required" });
+    const items = await jobsCollection.find({ postedBy: req.user._id }).sort({ createdAt: -1 }).toArray();
+    return res.json({ success: true, data: items });
+  } catch (e) {
+    console.error("GET /employer/jobs", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Employer: applications for a job
+app.get("/employer/jobs/:id/applications", verifyTokenEarly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    let objId;
+    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    const job = await jobsCollection.findOne({ _id: objId });
+    if (!job) return res.status(404).json({ success: false, message: "Job not found" });
+    if (job.postedBy.toString() !== req.user._id.toString()) return res.status(403).json({ success: false, message: "Forbidden" });
+    const apps = await jobApplicationsCollection
+      .aggregate([
+        { $match: { jobId: objId } },
+        { $lookup: { from: "usersCollections", localField: "userId", foreignField: "_id", as: "applicant" } },
+        { $unwind: "$applicant" },
+        { $sort: { createdAt: -1 } },
+      ])
+      .toArray();
+    return res.json({ success: true, data: apps });
+  } catch (e) {
+    console.error("GET /employer/jobs/:id/applications", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// =====================
+// Freelance Marketplace APIs
+// =====================
+
+// Client: Post a project
+app.post("/projects", verifyTokenEarly, async (req, res) => {
+  try {
+    const { title, description, category, budgetType, budget, skills, deadline } = req.body;
+    if (!title || !description || !category || !budgetType) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+    const project = {
+      title,
+      description,
+      category,
+      budgetType, // 'fixed' or 'hourly'
+      budget: budgetType === 'fixed' ? Number(budget) : null,
+      hourlyRate: budgetType === 'hourly' ? Number(budget) : null,
+      skills: Array.isArray(skills) ? skills : [],
+      deadline: deadline ? new Date(deadline) : null,
+      postedBy: req.user._id,
+      status: 'open', // 'open', 'in_progress', 'completed', 'cancelled'
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    const result = await projectsCollection.insertOne(project);
+    return res.json({ success: true, data: { _id: result.insertedId, ...project } });
+  } catch (e) {
+    console.error("POST /projects", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get all projects with filters and pagination
+app.get("/projects", async (req, res) => {
+  try {
+    const { q, category, budgetType, budgetMin, budgetMax, page = 1, limit = 10 } = req.query;
+    const pageNum = Number(page);
+    const limitNum = Number(limit);
+    const skip = (pageNum - 1) * limitNum;
+
+    const query = { status: 'open' };
+    if (q) {
+      query.$or = [
+        { title: { $regex: q, $options: 'i' } },
+        { description: { $regex: q, $options: 'i' } },
+      ];
+    }
+    if (category) query.category = category;
+    if (budgetType) query.budgetType = budgetType;
+    if (budgetMin) {
+      if (budgetType === 'fixed') {
+        query.budget = { ...query.budget, $gte: Number(budgetMin) };
+      } else {
+        query.hourlyRate = { ...query.hourlyRate, $gte: Number(budgetMin) };
+      }
+    }
+    if (budgetMax) {
+      if (budgetType === 'fixed') {
+        query.budget = { ...query.budget, $lte: Number(budgetMax) };
+      } else {
+        query.hourlyRate = { ...query.hourlyRate, $lte: Number(budgetMax) };
+      }
+    }
+
+    const [projects, total] = await Promise.all([
+      projectsCollection.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum).toArray(),
+      projectsCollection.countDocuments(query),
+    ]);
+
+    // Populate postedBy user info
+    const userIds = [...new Set(projects.map(p => p.postedBy.toString()))];
+    const users = await usersCollections.find({ _id: { $in: userIds.map(id => new ObjectId(id)) } })
+      .project({ _id: 1, name: 1, profileImage: 1 })
+      .toArray();
+    const userMap = Object.fromEntries(users.map(u => [u._id.toString(), u]));
+
+    const projectsWithUser = projects.map(p => ({
+      ...p,
+      postedByUser: userMap[p.postedBy.toString()] || null,
+    }));
+
+    return res.json({
+      success: true,
+      data: projectsWithUser,
+      pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum) },
+    });
+  } catch (e) {
+    console.error("GET /projects", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get single project
+app.get("/projects/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    let objId;
+    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    const project = await projectsCollection.findOne({ _id: objId });
+    if (!project) return res.status(404).json({ success: false, message: "Project not found" });
+
+    // Populate postedBy user
+    const user = await usersCollections.findOne({ _id: project.postedBy }, { projection: { _id: 1, name: 1, profileImage: 1, email: 1 } });
+    
+    // Populate selectedFreelancer if exists
+    let selectedFreelancerUser = null;
+    if (project.selectedFreelancer) {
+      selectedFreelancerUser = await usersCollections.findOne(
+        { _id: project.selectedFreelancer },
+        { projection: { _id: 1, name: 1, profileImage: 1, email: 1 } }
+      );
+    }
+    
+    return res.json({
+      success: true,
+      data: {
+        ...project,
+        postedByUser: user || null,
+        selectedFreelancerUser: selectedFreelancerUser || null,
+      },
+    });
+  } catch (e) {
+    console.error("GET /projects/:id", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Freelancer: Submit proposal
+app.post("/projects/:id/proposals", verifyTokenEarly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    let objId;
+    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    const project = await projectsCollection.findOne({ _id: objId });
+    if (!project) return res.status(404).json({ success: false, message: "Project not found" });
+    if (project.status !== 'open') return res.status(400).json({ success: false, message: "Project is not open for proposals" });
+    if (project.postedBy.toString() === req.user._id.toString()) {
+      return res.status(400).json({ success: false, message: "You cannot propose to your own project" });
+    }
+
+    const { coverLetter, proposedPrice, deliveryTime, hourlyRate } = req.body;
+    if (!coverLetter || (!proposedPrice && !hourlyRate)) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+
+    // Check if already proposed
+    const exists = await proposalsCollection.findOne({ projectId: objId, freelancerId: req.user._id });
+    if (exists) return res.status(400).json({ success: false, message: "You have already submitted a proposal" });
+
+    const proposal = {
+      projectId: objId,
+      freelancerId: req.user._id,
+      coverLetter,
+      proposedPrice: project.budgetType === 'fixed' ? Number(proposedPrice) : null,
+      hourlyRate: project.budgetType === 'hourly' ? Number(hourlyRate) : null,
+      deliveryTime, // e.g., "3 days", "1 week"
+      status: 'pending', // 'pending', 'accepted', 'rejected'
+      createdAt: new Date(),
+    };
+    const result = await proposalsCollection.insertOne(proposal);
+    return res.json({ success: true, data: { _id: result.insertedId, ...proposal } });
+  } catch (e) {
+    console.error("POST /projects/:id/proposals", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get proposals for a project (client only)
+app.get("/projects/:id/proposals", verifyTokenEarly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    let objId;
+    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    const project = await projectsCollection.findOne({ _id: objId });
+    if (!project) return res.status(404).json({ success: false, message: "Project not found" });
+    if (project.postedBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+
+    const proposals = await proposalsCollection
+      .aggregate([
+        { $match: { projectId: objId } },
+        { $lookup: { from: "usersCollections", localField: "freelancerId", foreignField: "_id", as: "freelancer" } },
+        { $unwind: "$freelancer" },
+        { $sort: { createdAt: -1 } },
+      ])
+      .toArray();
+    return res.json({ success: true, data: proposals });
+  } catch (e) {
+    console.error("GET /projects/:id/proposals", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Client: Accept/Reject proposal
+app.patch("/proposals/:id/status", verifyTokenEarly, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // 'accepted' or 'rejected'
+    if (!['accepted', 'rejected'].includes(status)) {
+      return res.status(400).json({ success: false, message: "Invalid status" });
+    }
+    let objId;
+    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+
+    const proposal = await proposalsCollection.findOne({ _id: objId });
+    if (!proposal) return res.status(404).json({ success: false, message: "Proposal not found" });
+
+    const project = await projectsCollection.findOne({ _id: proposal.projectId });
+    if (!project) return res.status(404).json({ success: false, message: "Project not found" });
+    if (project.postedBy.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+
+    await proposalsCollection.updateOne({ _id: objId }, { $set: { status, updatedAt: new Date() } });
+
+    if (status === 'accepted') {
+      // Update project status and reject other proposals
+      await projectsCollection.updateOne({ _id: proposal.projectId }, { $set: { status: 'in_progress', selectedFreelancer: proposal.freelancerId, updatedAt: new Date() } });
+      await proposalsCollection.updateMany(
+        { projectId: proposal.projectId, _id: { $ne: objId } },
+        { $set: { status: 'rejected', updatedAt: new Date() } }
+      );
+    }
+
+    return res.json({ success: true });
+  } catch (e) {
+    console.error("PATCH /proposals/:id/status", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Client: Get my projects
+app.get("/client/projects", verifyTokenEarly, async (req, res) => {
+  try {
+    const projects = await projectsCollection
+      .find({ postedBy: req.user._id })
+      .sort({ createdAt: -1 })
+      .toArray();
+    return res.json({ success: true, data: projects });
+  } catch (e) {
+    console.error("GET /client/projects", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Freelancer: Get my proposals
+app.get("/freelancer/proposals", verifyTokenEarly, async (req, res) => {
+  try {
+    const proposals = await proposalsCollection
+      .aggregate([
+        { $match: { freelancerId: req.user._id } },
+        { $lookup: { from: "projectsCollection", localField: "projectId", foreignField: "_id", as: "project" } },
+        { $unwind: "$project" },
+        { $sort: { createdAt: -1 } },
+      ])
+      .toArray();
+    return res.json({ success: true, data: proposals });
+  } catch (e) {
+    console.error("GET /freelancer/proposals", e);
+    return res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
