@@ -413,7 +413,7 @@ app.get("/courses/:courseId/student-dashboard", verifyTokenEarly, async (req, re
         ? Math.round(scoredAttempts.reduce((sum, att) => sum + att.score, 0) / scoredAttempts.length)
         : null;
 
-      // Get latest attempt for each exam
+      // Get latest attempt for each exam with full details
       const examResults = exams.map(exam => {
         const examAttempts = attemptsByExam[exam._id.toString()] || [];
         const latestAttempt = examAttempts.length > 0 ? examAttempts[0] : null;
@@ -425,6 +425,9 @@ app.get("/courses/:courseId/student-dashboard", verifyTokenEarly, async (req, re
           chapterTitle: chapter?.title || 'Unknown Chapter',
           chapterOrder: chapter?.order || 0,
           attemptCount: examAttempts.length,
+          // Include exam questions for display
+          examQuestions: exam.questions || [],
+          passingScore: exam.passingScore || 0,
           latestAttempt: latestAttempt ? {
             attemptId: latestAttempt._id,
             score: latestAttempt.score,
@@ -433,6 +436,10 @@ app.get("/courses/:courseId/student-dashboard", verifyTokenEarly, async (req, re
             createdAt: latestAttempt.createdAt,
             correctAnswers: latestAttempt.correctAnswers,
             totalQuestions: latestAttempt.totalQuestions,
+            // Include full answers for display
+            answers: latestAttempt.answers || [],
+            audioUrl: latestAttempt.audioUrl || null,
+            feedback: latestAttempt.feedback || null,
           } : null
         };
       });
@@ -3156,9 +3163,39 @@ app.delete("/books/delete/:bookId", async (req, res) => {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
+  // Validate bookId
+  if (!bookId || !ObjectId.isValid(bookId)) {
+    return res.status(400).json({ error: "Invalid or missing book ID." });
+  }
+
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
 
+    // Find the current user
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Check if the book exists and get book details
+    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    if (!book) {
+      return res.status(404).json({ success: false, message: "Book not found." });
+    }
+
+    // Check if current user is the original owner (who added the book)
+    const isOriginalOwner = book.userId?.toString() === currentUser._id.toString();
+
+    if (!isOriginalOwner) {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only the original owner who added this book can delete it. Transferred books cannot be deleted by the current holder." 
+      });
+    }
+
+    // Only original owner can delete, proceed with deletion
     const result = await bookCollections.deleteOne({
       _id: new ObjectId(bookId),
     });
@@ -3610,16 +3647,45 @@ app.get("/all-onindo-books", async (req, res) => {
 
 app.delete("/onindo/delete/:bookId", async (req, res) => {
   const { bookId } = req.params;
-  console.log("hit");
   const token = req.headers.authorization?.split(" ")[1];
-  console.log(token);
+
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  // Validate bookId
+  if (!bookId || !ObjectId.isValid(bookId)) {
+    return res.status(400).json({ error: "Invalid or missing book ID." });
   }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
 
+    // Find the current user
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Check if the book exists and get book details
+    const book = await onindoBookCollections.findOne({ _id: new ObjectId(bookId) });
+    if (!book) {
+      return res.status(404).json({ success: false, message: "Book not found." });
+    }
+
+    // Check if current user is the original owner (who added the book)
+    const isOriginalOwner = book.userId?.toString() === currentUser._id.toString();
+
+    if (!isOriginalOwner) {
+      return res.status(403).json({ 
+        success: false, 
+        message: "Only the original owner who added this book can delete it. Transferred books cannot be deleted by the current holder." 
+      });
+    }
+
+    // Only original owner can delete, proceed with deletion
     const result = await onindoBookCollections.deleteOne({
       _id: new ObjectId(bookId),
     });
