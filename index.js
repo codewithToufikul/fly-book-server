@@ -4568,10 +4568,35 @@ app.get("/all-home-books", async (req, res) => {
     }
 
     // Optimized query with limit, sort, and projection
-    // Note: Removed strict projection to ensure all fields are returned
-    // This helps with backward compatibility if field names differ
+    // Include all possible field name variations for backward compatibility
     const posts = await adminPostCollections
-      .find(query)
+      .find(query, {
+        projection: {
+          _id: 1,
+          // Text content fields (multiple variations)
+          postText: 1,
+          message: 1,
+          content: 1,
+          text: 1,
+          // Image fields (multiple variations)
+          postImage: 1,
+          image: 1,
+          imageUrl: 1,
+          photo: 1,
+          // Title fields
+          title: 1,
+          heading: 1,
+          // Other essential fields
+          category: 1,
+          date: 1,
+          time: 1,
+          userName: 1,
+          userImage: 1,
+          likes: 1,
+          likedBy: 1,
+          createdAt: 1,
+        }
+      })
       .sort({ 
         // Sort by createdAt first (faster), then date/time as fallback
         createdAt: -1,
@@ -4579,14 +4604,14 @@ app.get("/all-home-books", async (req, res) => {
         time: -1 
       })
       .limit(100) // Limit to 100 posts max for performance
-      .maxTimeMS(5000) // 5 second query timeout
+      .maxTimeMS(10000) // 10 second query timeout (increased from 5s)
       .toArray();
     
     // Map backend field names to frontend expected field names
     // Support multiple possible field names from database
     const mappedPosts = posts.map((post, index) => {
-      // Debug: log first post structure to understand data format
-      if (index === 0) {
+      // Debug: log first post structure only in development
+      if (index === 0 && process.env.NODE_ENV === 'development') {
         console.log('Sample post from DB:', {
           _id: post._id,
           title: post.title,
@@ -4594,7 +4619,6 @@ app.get("/all-home-books", async (req, res) => {
           postImage: post.postImage,
           message: post.message,
           image: post.image,
-          allKeys: Object.keys(post)
         });
       }
       
@@ -4621,9 +4645,16 @@ app.get("/all-home-books", async (req, res) => {
     
     // Send response immediately
     res.set('Content-Type', 'application/json');
-    res.send(mappedPosts || []);
+    res.json(mappedPosts || []);
   } catch (error) {
     console.error("Error fetching posts:", error);
+    
+    // If it's a timeout error, return empty array instead of error
+    if (error.message && (error.message.includes('timeout') || error.message.includes('maxTimeMS'))) {
+      console.warn("Query timeout - returning empty array");
+      return res.json([]);
+    }
+    
     res.status(500).json({ 
       error: "An error occurred while fetching posts",
       message: error.message,
