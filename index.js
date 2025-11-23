@@ -1,5 +1,6 @@
 const express = require("express");
 const cors = require("cors");
+const compression = require("compression");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const nodemailer = require("nodemailer");
@@ -27,6 +28,20 @@ try {
 
 const app = express();
 const port = process.env.PORT || 5000;
+
+// Performance: Compression middleware (gzip/brotli)
+app.use(compression({
+  level: 6, // Compression level (1-9, 6 is good balance)
+  filter: (req, res) => {
+    // Don't compress if client doesn't support it
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    // Use compression for all other requests
+    return compression.filter(req, res);
+  }
+}));
+
 // Middleware
 app.use(
   cors({
@@ -39,6 +54,15 @@ app.use(
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+// Performance: Cache headers for static-like responses
+app.use((req, res, next) => {
+  // Cache GET requests for 5 minutes (except auth endpoints)
+  if (req.method === 'GET' && !req.path.includes('/api/notifications') && !req.path.includes('/api/messages')) {
+    res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
+  }
+  next();
+});
+
 // MongoDB connection URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ivo4yuq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
 
@@ -48,6 +72,12 @@ const client = new MongoClient(uri, {
     strict: false,
     deprecationErrors: true,
   },
+  // Performance: Connection pool optimization
+  maxPoolSize: 50, // Maximum number of connections in the pool
+  minPoolSize: 10, // Minimum number of connections
+  maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
+  serverSelectionTimeoutMS: 5000, // Timeout for server selection
+  socketTimeoutMS: 45000, // Socket timeout
 });
 
 // (audio upload route is defined after audioUpload is initialized)
@@ -711,24 +741,56 @@ const GOOGLE_API_KEY = process.env.GOOGLE_CUSTOM_SEARCH_API_KEY;
 const SEARCH_ENGINE_ID = process.env.GOOGLE_CUSTOM_SEARCH_ENGINE_ID;
 const GMINI_API_KEY = process.env.GMINI_API_KEY;
 
+// Performance: Create all database indexes on startup
 (async () => {
   try {
     await connectToMongo();
-    await opinionCollections.createIndex({
-      description: "text",
-    });
-    console.log("Text index created successfully!");
-  } catch (error) {
-    console.error("Error creating text index:", error);
-  }
-})();
-(async () => {
-  try {
-    await connectToMongo();
+    
+    // Text search index for opinions
+    await opinionCollections.createIndex({ description: "text" });
+    console.log("✅ Text index created for opinions");
+    
+    // Location index for books
     await bookCollections.createIndex({ location: "2dsphere" });
-    console.log("location index created successfully!");
+    console.log("✅ Location index created for books");
+    
+    // Performance: Indexes for frequently queried fields
+    await usersCollections.createIndex({ number: 1 }, { unique: true });
+    await usersCollections.createIndex({ email: 1 });
+    await usersCollections.createIndex({ _id: 1, isOnline: 1 }); // For online status queries
+    
+    await messagesCollections.createIndex({ receiverId: 1, isRead: 1 });
+    await messagesCollections.createIndex({ senderId: 1, receiverId: 1, timestamp: -1 });
+    
+    await notifyCollections.createIndex({ receiverId: 1, isRead: 1 });
+    await notifyCollections.createIndex({ receiverId: 1, timestamp: -1 });
+    
+    await bookCollections.createIndex({ owner: 1 });
+    await bookCollections.createIndex({ bookName: 1 });
+    
+    await pdfCollections.createIndex({ bookName: 1 });
+    await pdfCollections.createIndex({ writerName: 1 });
+    
+    await opinionCollections.createIndex({ userName: 1 });
+    
+    await productsCollection.createIndex({ category: 1, status: 1 });
+    await productsCollection.createIndex({ title: "text", description: "text" });
+    
+    await jobsCollection.createIndex({ status: 1, createdAt: -1 });
+    await jobsCollection.createIndex({ title: "text", description: "text" });
+    
+    await projectsCollection.createIndex({ status: 1, createdAt: -1 });
+    await projectsCollection.createIndex({ title: "text", description: "text" });
+    
+    await communityPostsCollection.createIndex({ communityId: 1, createdAt: -1 });
+    await communityPostsCollection.createIndex({ authorId: 1 });
+    
+    await coursesCollection.createIndex({ status: 1 });
+    await coursesCollection.createIndex({ title: "text" });
+    
+    console.log("✅ All database indexes created successfully!");
   } catch (error) {
-    console.error("Error creating location index:", error);
+    console.error("❌ Error creating indexes:", error);
   }
 })();
 
@@ -2575,6 +2637,13 @@ app.get("/peoples", async (req, res) => {
         { projection: { password: 0 } } // Exclude the password field
       )
       .toArray();
+    
+    // Include isOnline and lastSeen in the result
+    const usersWithStatus = result.map(user => ({
+      ...user,
+      isOnline: user.isOnline || false,
+      lastSeen: user.lastSeen || null,
+    }));
 
     res.send(result);
   } catch (error) {
@@ -4575,7 +4644,7 @@ app.get("/api/chat-users", async (req, res) => {
             .filter((id) => id !== null),
         },
       })
-      .project({ name: 1, profileImage: 1 })
+      .project({ name: 1, profileImage: 1, isOnline: 1, lastSeen: 1 })
       .toArray();
 
     // Get last message for each user with error handling
@@ -4602,11 +4671,14 @@ app.get("/api/chat-users", async (req, res) => {
           return {
             ...chatUser,
             lastMessage: lastMessage[0]?.messageText || null,
+            lastMessageTime: lastMessage[0]?.timestamp || null,
             sender: lastMessage[0]
               ? lastMessage[0].senderId.toString() === user._id.toString()
                 ? "You"
                 : chatUser.name
               : null,
+            isOnline: chatUser.isOnline || false,
+            lastSeen: chatUser.lastSeen || null,
           };
         } catch (error) {
           console.error(`Error processing chat user ${chatUser._id}:`, error);
@@ -4669,6 +4741,7 @@ app.get("/api/messages/:userId", async (req, res) => {
   }
 });
 
+// Get all notifications for a user
 app.get("/api/notifications/:userId", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
@@ -4687,15 +4760,160 @@ app.get("/api/notifications/:userId", async (req, res) => {
     }
 
     const { userId } = req.params;
-    console.log("userid", userId);
-    // Fetch chat messages where currentUser is either sender or receiver
+    // Fetch notifications for the user
     const notifications = await notifyCollections
       .find({ receoientId: new ObjectId(userId) })
+      .sort({ timestamp: -1 })
       .toArray();
 
     res.json({ success: true, notifications });
   } catch (error) {
-    console.error("Error fetching messages:", error);
+    console.error("Error fetching notifications:", error);
+    res.status(500).json({ error: "Internal server error." });
+  }
+});
+
+// Get unread notification count
+app.get("/api/notifications/:userId/unread-count", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { userId } = req.params;
+    // Count unread notifications
+    const unreadCount = await notifyCollections.countDocuments({
+      receoientId: new ObjectId(userId),
+      isRead: false,
+    });
+
+    res.json({ success: true, unreadCount });
+  } catch (error) {
+    console.error("Error fetching unread count:", error);
+    res.status(500).json({ error: "Internal server error." });
+  }
+});
+
+// Mark notifications as read
+app.put("/api/notifications/mark-read", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { userId, notificationIds } = req.body;
+
+    if (notificationIds && notificationIds.length > 0) {
+      // Mark specific notifications as read
+      await notifyCollections.updateMany(
+        {
+          _id: { $in: notificationIds.map(id => new ObjectId(id)) },
+          receoientId: new ObjectId(userId),
+        },
+        { $set: { isRead: true, readAt: new Date() } }
+      );
+    } else {
+      // Mark all notifications as read for the user
+      await notifyCollections.updateMany(
+        { receoientId: new ObjectId(userId), isRead: false },
+        { $set: { isRead: true, readAt: new Date() } }
+      );
+    }
+
+    res.json({ success: true, message: "Notifications marked as read" });
+  } catch (error) {
+    console.error("Error marking notifications as read:", error);
+    res.status(500).json({ error: "Internal server error." });
+  }
+});
+
+// Get unread message count
+app.get("/api/messages/:userId/unread-count", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { userId } = req.params;
+    // Count unread messages
+    const unreadCount = await messagesCollections.countDocuments({
+      receoientId: new ObjectId(userId),
+      isRead: false,
+    });
+
+    res.json({ success: true, unreadCount });
+  } catch (error) {
+    console.error("Error fetching unread message count:", error);
+    res.status(500).json({ error: "Internal server error." });
+  }
+});
+
+// Mark messages as read
+app.put("/api/messages/mark-read", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const { userId, senderId } = req.body;
+
+    // Mark all messages from a specific sender as read
+    await messagesCollections.updateMany(
+      {
+        receoientId: new ObjectId(userId),
+        senderId: new ObjectId(senderId),
+        isRead: false,
+      },
+      { $set: { isRead: true, readAt: new Date() } }
+    );
+
+    res.json({ success: true, message: "Messages marked as read" });
+  } catch (error) {
+    console.error("Error marking messages as read:", error);
     res.status(500).json({ error: "Internal server error." });
   }
 });
@@ -8614,10 +8832,31 @@ io.on("connection", (socket) => {
     socket.emit("connected");
   });
 
-  socket.on("joinUser", (userId) => {
+  socket.on("joinUser", async (userId) => {
     const roomId = userId;
     socket.join(roomId); // ইউজারকে রুমে যোগ করা
-    console.log("user joined", roomId);
+    socket.userId = userId; // Store userId in socket for disconnect handling
+    
+    try {
+      // Mark user as online in database
+      await usersCollections.updateOne(
+        { _id: new ObjectId(userId) },
+        { 
+          $set: { 
+            isOnline: true,
+            lastSeen: new Date()
+          } 
+        }
+      );
+      
+      // Broadcast user online status to all connected clients
+      io.emit("userOnline", { userId });
+      
+      console.log("user joined and marked online:", roomId);
+    } catch (error) {
+      console.error("Error marking user online:", error);
+    }
+    
     socket.emit("connected");
   });
 
@@ -8639,6 +8878,7 @@ io.on("connection", (socket) => {
         senderName,
         notifyText,
         type,
+        isRead: false, // Unread by default
         timestamp: new Date(),
       };
       await notifyCollections.insertOne(newNotifyReq);
@@ -8673,6 +8913,7 @@ io.on("connection", (socket) => {
         messageText,
         messageType,
         mediaUrl,
+        isRead: false, // Unread by default
         timestamp: new Date(),
       };
 
@@ -8703,8 +8944,30 @@ io.on("connection", (socket) => {
     socket.to(data.roomId).emit("typing", { senderId: data.senderId });
   });
 
-  socket.on("disconnect", () => {
+  socket.on("disconnect", async () => {
     console.log("A user disconnected:", socket.id);
+    
+    // Mark user as offline if userId is stored
+    if (socket.userId) {
+      try {
+        await usersCollections.updateOne(
+          { _id: new ObjectId(socket.userId) },
+          { 
+            $set: { 
+              isOnline: false,
+              lastSeen: new Date()
+            } 
+          }
+        );
+        
+        // Broadcast user offline status to all connected clients
+        io.emit("userOffline", { userId: socket.userId });
+        
+        console.log("user marked offline:", socket.userId);
+      } catch (error) {
+        console.error("Error marking user offline:", error);
+      }
+    }
   });
 });
 
