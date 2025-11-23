@@ -84,16 +84,47 @@ const client = new MongoClient(uri, {
 
 // MongoDB connection
 let isConnected = false;
+let connectionPromise = null;
 
 async function connectToMongo() {
-  if (isConnected) return;
-  try {
-    await client.connect();
-    isConnected = true; // Set the flag
-    console.log("MongoDB connected successfully.");
-  } catch (error) {
-    console.error("MongoDB connection error:", error);
+  // If already connected, verify it's still alive
+  if (isConnected) {
+    try {
+      await client.db("admin").command({ ping: 1 });
+      return;
+    } catch (error) {
+      console.log("MongoDB connection lost, reconnecting...");
+      isConnected = false;
+      connectionPromise = null;
+    }
   }
+  
+  // If connection is in progress, wait for it
+  if (connectionPromise) {
+    return connectionPromise;
+  }
+  
+  // Start new connection
+  connectionPromise = (async () => {
+    try {
+      if (!client.topology || !client.topology.isConnected()) {
+        await client.connect();
+      }
+      // Verify connection
+      await client.db("admin").command({ ping: 1 });
+      isConnected = true;
+      connectionPromise = null;
+      console.log("✅ MongoDB connected successfully.");
+      return;
+    } catch (error) {
+      isConnected = false;
+      connectionPromise = null;
+      console.error("❌ MongoDB connection error:", error.message);
+      throw new Error(`Database connection failed: ${error.message}`);
+    }
+  })();
+  
+  return connectionPromise;
 }
 
 cloudinary.config({
@@ -693,7 +724,18 @@ const noteCollections = db.collection("noteCollections");
 const organizationCollections = db.collection("organizationCollections");
 const homeCategoryCollection = db.collection("homeCategoryCollection");
 const adminAiPostCollections = db.collection("adminAiPostCollections");
-const JWT_SECRET = process.env.ACCESS_TOKEN_SECRET;
+const JWT_SECRET = process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET;
+
+// Validate required environment variables on startup
+if (!JWT_SECRET) {
+  console.error("⚠️  WARNING: JWT_SECRET or ACCESS_TOKEN_SECRET is not set in environment variables!");
+  console.error("⚠️  Authentication will fail without this variable.");
+}
+
+if (!process.env.DB_USER || !process.env.DB_PASS) {
+  console.error("⚠️  WARNING: DB_USER or DB_PASS is not set in environment variables!");
+  console.error("⚠️  Database connection will fail without these variables.");
+}
 const channelsCollection = db.collection("Channels");
 const channelessagesCollection = db.collection("channelMessages");
 const coursesCollection = db.collection("coursesCollection");
@@ -797,6 +839,32 @@ const GMINI_API_KEY = process.env.GMINI_API_KEY;
 // Route to check API status
 app.get("/", (req, res) => {
   res.send("API is running!");
+});
+
+// Health check endpoint with database status
+app.get("/health", async (req, res) => {
+  try {
+    await connectToMongo();
+    await client.db("admin").command({ ping: 1 });
+    
+    // Test collections access
+    const db = client.db("flybook");
+    const testCollection = db.collection("usersCollections");
+    await testCollection.findOne({}, { limit: 1 });
+    
+    res.json({
+      status: "healthy",
+      database: "connected",
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: "unhealthy",
+      database: "disconnected",
+      error: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 // =====================
@@ -2184,7 +2252,7 @@ app.post("/users/register", async (req, res) => {
 // User Login Route
 app.post("/users/login", async (req, res) => {
   const { number, password } = req.body;
-  console.log(number, password)
+  
   // Input validation
   if (!number || !password) {
     return res
@@ -2193,6 +2261,19 @@ app.post("/users/login", async (req, res) => {
   }
 
   try {
+    // Ensure database connection
+    await connectToMongo();
+    
+    // Check if JWT_SECRET is set
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    if (!jwtSecret) {
+      console.error("JWT_SECRET is not set in environment variables");
+      return res.status(500).json({
+        success: false,
+        message: "Server configuration error",
+      });
+    }
+
     const user = await usersCollections.findOne({ number });
 
     if (!user) {
@@ -2207,19 +2288,19 @@ app.post("/users/login", async (req, res) => {
         .status(401)
         .json({ success: false, message: "Invalid number or password" });
     }
-    console.log(JWT_SECRET)
+
     // Generate JWT token
     const token = jwt.sign(
       {
         id: user._id.toString(),
         number: user.number,
       },
-      process.env.ACCESS_TOKEN_SECRET,
+      jwtSecret,
       {
-        expiresIn: "30d", // human-readable format
+        expiresIn: "30d",
       }
     );
-    console.log(token)
+
     // Respond with token and basic user info (never password!)
     res.status(200).json({
       success: true,
@@ -2236,6 +2317,7 @@ app.post("/users/login", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Internal server error",
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 });
@@ -2249,7 +2331,17 @@ app.get("/profile", async (req, res) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    // Ensure database connection
+    await connectToMongo();
+    
+    // Check if JWT_SECRET is set
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    if (!jwtSecret) {
+      console.error("JWT_SECRET is not set in environment variables");
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    const decoded = jwt.verify(token, jwtSecret);
     if (!decoded.number) {
       return res.status(400).json({ error: "Invalid token payload." });
     }
@@ -4297,6 +4389,14 @@ app.put("/admin/post-ai/:id", async (req, res) => {
 
 app.get("/all-home-books", async (req, res) => {
   try {
+    // Ensure database connection
+    await connectToMongo();
+    
+    // Verify collections are accessible
+    if (!adminPostCollections) {
+      throw new Error("adminPostCollections is not initialized");
+    }
+    
     const { category } = req.query;
     let query = {};
 
@@ -4305,10 +4405,14 @@ app.get("/all-home-books", async (req, res) => {
     }
 
     const post = await adminPostCollections.find(query).toArray();
-    res.send(post);
+    res.send(post || []);
   } catch (error) {
     console.error("Error fetching posts:", error);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ 
+      error: "An error occurred while fetching posts",
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
@@ -5131,11 +5235,23 @@ app.post("/admin/category-add", async (req, res) => {
 
 app.get("/home-category", async (req, res) => {
   try {
+    // Ensure database connection
+    await connectToMongo();
+    
+    // Verify collections are accessible
+    if (!homeCategoryCollection) {
+      throw new Error("homeCategoryCollection is not initialized");
+    }
+    
     const categories = await homeCategoryCollection.find().toArray();
-    res.json({ success: true, categories });
+    res.json({ success: true, categories: categories || [] });
   } catch (error) {
     console.error("Error while getting category:", error);
-    res.status(500).json({ error: "An error occurred while getting category" });
+    res.status(500).json({ 
+      error: "An error occurred while getting category",
+      message: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
@@ -8808,6 +8924,17 @@ app.delete("/upload/video/:publicId", async (req, res) => {
     return res.status(500).json({ success: false, message: "Failed to delete video" });
   }
 });
+
+// Initialize database connection on startup
+(async () => {
+  try {
+    await connectToMongo();
+    console.log("✅ Database connection established on startup");
+  } catch (error) {
+    console.error("❌ Failed to connect to database on startup:", error.message);
+    console.error("⚠️  Server will start but database operations may fail");
+  }
+})();
 
 const server = app.listen(port, () => {
   console.log(`Server running http://localhost:${port}`);
