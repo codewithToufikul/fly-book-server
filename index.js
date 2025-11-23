@@ -4575,12 +4575,14 @@ app.get("/all-home-books", async (req, res) => {
           _id: 1,
           postText: 1,
           postImage: 1,
+          title: 1, // Add title field
           category: 1,
           date: 1,
           time: 1,
           userName: 1,
           userImage: 1,
           likes: 1,
+          likedBy: 1, // Add likedBy for like status
           createdAt: 1,
         }
       })
@@ -4594,9 +4596,17 @@ app.get("/all-home-books", async (req, res) => {
       .maxTimeMS(5000) // 5 second query timeout
       .toArray();
     
+    // Map backend field names to frontend expected field names
+    const mappedPosts = posts.map(post => ({
+      ...post,
+      message: post.postText || '', // Map postText to message
+      image: post.postImage || '', // Map postImage to image
+      title: post.title || 'Untitled', // Ensure title exists
+    }));
+    
     // Send response immediately
     res.set('Content-Type', 'application/json');
-    res.send(posts || []);
+    res.send(mappedPosts || []);
   } catch (error) {
     console.error("Error fetching posts:", error);
     res.status(500).json({ 
