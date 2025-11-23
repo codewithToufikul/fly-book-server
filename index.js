@@ -241,7 +241,13 @@ const getPdfPageCount = async (pdfUrl) => {
 };
 
 // Middleware to connect to MongoDB before every route
+// Skip database connection for routes that don't need it
 app.use(async (req, res, next) => {
+  // Skip database connection for root and health check routes
+  if (req.path === "/" || req.path === "/health") {
+    return next();
+  }
+  
   try {
     await connectToMongo();
     next();
