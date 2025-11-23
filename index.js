@@ -830,6 +830,11 @@ const GMINI_API_KEY = process.env.GMINI_API_KEY;
     await coursesCollection.createIndex({ status: 1 });
     await coursesCollection.createIndex({ title: "text" });
     
+    // Indexes for admin posts (home page)
+    await adminPostCollections.createIndex({ category: 1 });
+    await adminPostCollections.createIndex({ date: -1, time: -1 }); // For sorting
+    await adminPostCollections.createIndex({ createdAt: -1 }); // Fallback sorting
+    
     console.log("✅ All database indexes created successfully!");
   } catch (error) {
     console.error("❌ Error creating indexes:", error);
@@ -4404,8 +4409,36 @@ app.get("/all-home-books", async (req, res) => {
       query.category = category;
     }
 
-    const post = await adminPostCollections.find(query).toArray();
-    res.send(post || []);
+    // Optimized query with limit, sort, and projection
+    const posts = await adminPostCollections
+      .find(query, {
+        // Projection: only return necessary fields to reduce data transfer
+        projection: {
+          _id: 1,
+          postText: 1,
+          postImage: 1,
+          category: 1,
+          date: 1,
+          time: 1,
+          userName: 1,
+          userImage: 1,
+          likes: 1,
+          createdAt: 1,
+        }
+      })
+      .sort({ 
+        // Sort by createdAt first (faster), then date/time as fallback
+        createdAt: -1,
+        date: -1, 
+        time: -1 
+      })
+      .limit(100) // Limit to 100 posts max for performance
+      .maxTimeMS(5000) // 5 second query timeout
+      .toArray();
+    
+    // Send response immediately
+    res.set('Content-Type', 'application/json');
+    res.send(posts || []);
   } catch (error) {
     console.error("Error fetching posts:", error);
     res.status(500).json({ 
