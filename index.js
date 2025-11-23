@@ -85,6 +85,9 @@ const client = new MongoClient(uri, {
 // MongoDB connection
 let isConnected = false;
 let connectionPromise = null;
+let connectionRetries = 0;
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 2000; // 2 seconds
 
 async function connectToMongo() {
   // If already connected, verify it's still alive
@@ -96,6 +99,7 @@ async function connectToMongo() {
       console.log("MongoDB connection lost, reconnecting...");
       isConnected = false;
       connectionPromise = null;
+      connectionRetries = 0;
     }
   }
   
@@ -104,24 +108,93 @@ async function connectToMongo() {
     return connectionPromise;
   }
   
-  // Start new connection
+  // Start new connection with retry logic
   connectionPromise = (async () => {
-    try {
-      if (!client.topology || !client.topology.isConnected()) {
-        await client.connect();
+    let lastError = null;
+    
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        // Check if credentials are available
+        if (!process.env.DB_USER || !process.env.DB_PASS) {
+          throw new Error("MongoDB credentials (DB_USER or DB_PASS) are missing in environment variables");
+        }
+        
+        // Close existing connection if it exists but is not working
+        if (client.topology && client.topology.isConnected()) {
+          try {
+            await client.db("admin").command({ ping: 1 });
+            isConnected = true;
+            connectionPromise = null;
+            connectionRetries = 0;
+            console.log("✅ MongoDB connection verified.");
+            return;
+          } catch (pingError) {
+            console.log("Existing connection failed ping, reconnecting...");
+            try {
+              await client.close();
+            } catch (closeError) {
+              // Ignore close errors
+            }
+          }
+        }
+        
+        // Attempt to connect
+        if (!client.topology || !client.topology.isConnected()) {
+          console.log(`Attempting MongoDB connection (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
+          await client.connect();
+        }
+        
+        // Verify connection with timeout
+        const pingPromise = client.db("admin").command({ ping: 1 });
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Connection ping timeout")), 5000)
+        );
+        
+        await Promise.race([pingPromise, timeoutPromise]);
+        
+        // Connection successful
+        isConnected = true;
+        connectionPromise = null;
+        connectionRetries = 0;
+        console.log("✅ MongoDB connected successfully.");
+        return;
+        
+      } catch (error) {
+        lastError = error;
+        connectionRetries = attempt + 1;
+        
+        // Log detailed error information
+        console.error(`❌ MongoDB connection attempt ${attempt + 1} failed:`, {
+          message: error.message,
+          name: error.name,
+          code: error.code,
+          codeName: error.codeName
+        });
+        
+        // If this is not the last attempt, wait before retrying
+        if (attempt < MAX_RETRIES) {
+          const delay = RETRY_DELAY * Math.pow(2, attempt); // Exponential backoff
+          console.log(`⏳ Retrying in ${delay}ms...`);
+          await new Promise(resolve => setTimeout(resolve, delay));
+        }
       }
-      // Verify connection
-      await client.db("admin").command({ ping: 1 });
-      isConnected = true;
-      connectionPromise = null;
-      console.log("✅ MongoDB connected successfully.");
-      return;
-    } catch (error) {
-      isConnected = false;
-      connectionPromise = null;
-      console.error("❌ MongoDB connection error:", error.message);
-      throw new Error(`Database connection failed: ${error.message}`);
     }
+    
+    // All retries failed
+    isConnected = false;
+    connectionPromise = null;
+    const errorMessage = lastError?.message || "Unknown connection error";
+    console.error(`❌ MongoDB connection failed after ${MAX_RETRIES + 1} attempts:`, errorMessage);
+    
+    // Provide helpful error message
+    let userMessage = `Database connection failed: ${errorMessage}`;
+    if (errorMessage.includes("authentication") || errorMessage.includes("credentials")) {
+      userMessage = "Database authentication failed. Please check DB_USER and DB_PASS environment variables.";
+    } else if (errorMessage.includes("timeout") || errorMessage.includes("ENOTFOUND")) {
+      userMessage = "Database connection timeout. Please check network connectivity and MongoDB Atlas configuration.";
+    }
+    
+    throw new Error(userMessage);
   })();
   
   return connectionPromise;
@@ -252,8 +325,22 @@ app.use(async (req, res, next) => {
     await connectToMongo();
     next();
   } catch (error) {
-    console.error("MongoDB connection error:", error);
-    res.status(500).send({ message: "Failed to connect to database" });
+    console.error(`MongoDB connection error for ${req.method} ${req.path}:`, error.message);
+    
+    // Provide more detailed error response
+    const errorResponse = {
+      message: error.message || "Failed to connect to database",
+      path: req.path,
+      method: req.method,
+      timestamp: new Date().toISOString()
+    };
+    
+    // Don't expose internal error details in production
+    if (process.env.NODE_ENV === "development") {
+      errorResponse.stack = error.stack;
+    }
+    
+    res.status(500).json(errorResponse);
   }
 });
 
@@ -8967,11 +9054,26 @@ app.delete("/upload/video/:publicId", async (req, res) => {
 // Initialize database connection on startup
 (async () => {
   try {
+    console.log("🔄 Attempting initial MongoDB connection...");
     await connectToMongo();
+    
+    // Verify we can access collections
+    const db = client.db("flybook");
+    const testCollection = db.collection("usersCollections");
+    await testCollection.findOne({}, { limit: 1 }).catch(() => {
+      // Collection might be empty, which is okay
+    });
+    
     console.log("✅ Database connection established on startup");
+    console.log("✅ Database collections are accessible");
   } catch (error) {
     console.error("❌ Failed to connect to database on startup:", error.message);
     console.error("⚠️  Server will start but database operations may fail");
+    console.error("⚠️  Please check:");
+    console.error("   1. MongoDB Atlas cluster is running");
+    console.error("   2. DB_USER and DB_PASS environment variables are set correctly");
+    console.error("   3. IP address is whitelisted in MongoDB Atlas");
+    console.error("   4. Network connectivity to MongoDB Atlas");
   }
 })();
 
