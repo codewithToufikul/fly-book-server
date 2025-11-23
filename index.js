@@ -4373,6 +4373,10 @@ app.post("/admin/post", async (req, res) => {
         .json({ error: "Access denied. You are not an admin." });
     }
     const result = await adminPostCollections.insertOne(postData);
+    
+    // Clear posts cache when new post is added
+    postsCache.clear();
+    
     res.send({
       success: true,
       message: "posted successfully",
@@ -4550,8 +4554,23 @@ app.put("/admin/post-ai/:id", async (req, res) => {
   }
 });
 
+// In-memory cache for posts (5 minute TTL)
+const postsCache = new Map();
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
 app.get("/all-home-books", async (req, res) => {
   try {
+    const { category } = req.query;
+    const cacheKey = category || "All";
+    
+    // Check cache first
+    const cached = postsCache.get(cacheKey);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      res.set('Content-Type', 'application/json');
+      res.set('X-Cache', 'HIT');
+      return res.json(cached.data);
+    }
+    
     // Ensure database connection
     await connectToMongo();
     
@@ -4560,7 +4579,6 @@ app.get("/all-home-books", async (req, res) => {
       throw new Error("adminPostCollections is not initialized");
     }
     
-    const { category } = req.query;
     let query = {};
 
     if (category && category !== "All") {
@@ -4597,31 +4615,14 @@ app.get("/all-home-books", async (req, res) => {
           createdAt: 1,
         }
       })
-      .sort({ 
-        // Sort by createdAt first (faster), then date/time as fallback
-        createdAt: -1,
-        date: -1, 
-        time: -1 
-      })
-      .limit(100) // Limit to 100 posts max for performance
-      .maxTimeMS(10000) // 10 second query timeout (increased from 5s)
+      .sort({ createdAt: -1 }) // Sort only by createdAt (faster, index exists)
+      .limit(50) // Reduced limit from 100 to 50 for faster queries
+      .maxTimeMS(8000) // 8 second query timeout
       .toArray();
     
     // Map backend field names to frontend expected field names
     // Support multiple possible field names from database
-    const mappedPosts = posts.map((post, index) => {
-      // Debug: log first post structure only in development
-      if (index === 0 && process.env.NODE_ENV === 'development') {
-        console.log('Sample post from DB:', {
-          _id: post._id,
-          title: post.title,
-          postText: post.postText,
-          postImage: post.postImage,
-          message: post.message,
-          image: post.image,
-        });
-      }
-      
+    const mappedPosts = posts.map((post) => {
       // Extract text content - try multiple field names
       const textContent = post.postText || post.message || post.content || post.text || '';
       
@@ -4632,7 +4633,7 @@ app.get("/all-home-books", async (req, res) => {
       const postTitle = post.title || post.heading || 'Untitled';
       
       return {
-        ...post,
+        _id: post._id,
         // Map to frontend expected field names
         message: textContent,
         image: imageUrl,
@@ -4640,11 +4641,27 @@ app.get("/all-home-books", async (req, res) => {
         // Keep original fields for backward compatibility
         postText: textContent,
         postImage: imageUrl,
+        // Other essential fields
+        category: post.category,
+        date: post.date,
+        time: post.time,
+        userName: post.userName,
+        userImage: post.userImage,
+        likes: post.likes || 0,
+        likedBy: post.likedBy || [],
+        createdAt: post.createdAt,
       };
+    });
+    
+    // Cache the result
+    postsCache.set(cacheKey, {
+      data: mappedPosts,
+      timestamp: Date.now()
     });
     
     // Send response immediately
     res.set('Content-Type', 'application/json');
+    res.set('X-Cache', 'MISS');
     res.json(mappedPosts || []);
   } catch (error) {
     console.error("Error fetching posts:", error);
