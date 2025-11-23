@@ -76,8 +76,14 @@ const client = new MongoClient(uri, {
   maxPoolSize: 50, // Maximum number of connections in the pool
   minPoolSize: 10, // Minimum number of connections
   maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
-  serverSelectionTimeoutMS: 5000, // Timeout for server selection
-  socketTimeoutMS: 45000, // Socket timeout
+  serverSelectionTimeoutMS: 30000, // Increased timeout for VPS (30 seconds)
+  connectTimeoutMS: 30000, // Connection timeout (30 seconds)
+  socketTimeoutMS: 45000, // Socket timeout (45 seconds)
+  // Retry configuration
+  retryWrites: true,
+  retryReads: true,
+  // DNS resolution
+  directConnection: false, // Use SRV records for MongoDB Atlas
 });
 
 // (audio upload route is defined after audioUpload is initialized)
@@ -144,10 +150,10 @@ async function connectToMongo() {
           await client.connect();
         }
         
-        // Verify connection with timeout
+        // Verify connection with timeout (increased for VPS)
         const pingPromise = client.db("admin").command({ ping: 1 });
         const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("Connection ping timeout")), 5000)
+          setTimeout(() => reject(new Error("Connection ping timeout")), 30000)
         );
         
         await Promise.race([pingPromise, timeoutPromise]);
@@ -186,13 +192,25 @@ async function connectToMongo() {
     const errorMessage = lastError?.message || "Unknown connection error";
     console.error(`❌ MongoDB connection failed after ${MAX_RETRIES + 1} attempts:`, errorMessage);
     
-    // Provide helpful error message
+    // Provide helpful error message with VPS-specific guidance
     let userMessage = `Database connection failed: ${errorMessage}`;
     if (errorMessage.includes("authentication") || errorMessage.includes("credentials")) {
       userMessage = "Database authentication failed. Please check DB_USER and DB_PASS environment variables.";
-    } else if (errorMessage.includes("timeout") || errorMessage.includes("ENOTFOUND")) {
-      userMessage = "Database connection timeout. Please check network connectivity and MongoDB Atlas configuration.";
+    } else if (errorMessage.includes("timeout") || errorMessage.includes("Server selection timed out")) {
+      userMessage = "Database connection timeout. This usually means:\n" +
+        "1. VPS IP address is not whitelisted in MongoDB Atlas Network Access\n" +
+        "2. Network/firewall blocking MongoDB Atlas (port 27017)\n" +
+        "3. DNS resolution issues\n" +
+        "Please check MongoDB Atlas Network Access settings and whitelist your VPS IP address (0.0.0.0/0 for testing).";
+    } else if (errorMessage.includes("ENOTFOUND")) {
+      userMessage = "DNS resolution failed. Cannot resolve MongoDB Atlas hostname. Check network connectivity.";
     }
+    
+    console.error("🔍 Troubleshooting steps:");
+    console.error("   1. Check MongoDB Atlas Network Access - whitelist VPS IP or use 0.0.0.0/0 (for testing)");
+    console.error("   2. Verify DB_USER and DB_PASS environment variables are set correctly");
+    console.error("   3. Test network connectivity: ping cluster0.ivo4yuq.mongodb.net");
+    console.error("   4. Check VPS firewall rules allow outbound connections on port 27017");
     
     throw new Error(userMessage);
   })();
@@ -963,6 +981,53 @@ app.get("/health", async (req, res) => {
       timestamp: new Date().toISOString()
     });
   }
+});
+
+// Diagnostic endpoint for VPS connection issues
+app.get("/diagnostics", async (req, res) => {
+  const diagnostics = {
+    timestamp: new Date().toISOString(),
+    environment: {
+      nodeEnv: process.env.NODE_ENV || "not set",
+      hasDbUser: !!process.env.DB_USER,
+      hasDbPass: !!process.env.DB_PASS,
+      mongoUri: process.env.DB_USER ? `mongodb+srv://${process.env.DB_USER}:***@cluster0.ivo4yuq.mongodb.net/` : "not configured"
+    },
+    connection: {
+      isConnected: isConnected,
+      hasConnectionPromise: !!connectionPromise,
+      retries: connectionRetries
+    },
+    network: {
+      mongoHost: "cluster0.ivo4yuq.mongodb.net",
+      note: "Check if this host is reachable from VPS: ping cluster0.ivo4yuq.mongodb.net"
+    },
+    recommendations: []
+  };
+  
+  // Test connection
+  try {
+    await connectToMongo();
+    diagnostics.connection.test = "success";
+    diagnostics.status = "✅ Connection successful";
+  } catch (error) {
+    diagnostics.connection.test = "failed";
+    diagnostics.connection.error = error.message;
+    diagnostics.status = "❌ Connection failed";
+    
+    if (error.message.includes("timeout") || error.message.includes("Server selection")) {
+      diagnostics.recommendations.push("1. Check MongoDB Atlas Network Access - whitelist VPS IP address");
+      diagnostics.recommendations.push("2. For testing, you can temporarily allow 0.0.0.0/0 (all IPs) in MongoDB Atlas");
+      diagnostics.recommendations.push("3. Check VPS firewall: sudo ufw status (should allow outbound on port 27017)");
+      diagnostics.recommendations.push("4. Test DNS: nslookup cluster0.ivo4yuq.mongodb.net");
+    }
+    
+    if (!process.env.DB_USER || !process.env.DB_PASS) {
+      diagnostics.recommendations.push("5. Set DB_USER and DB_PASS environment variables in PM2 or .env file");
+    }
+  }
+  
+  res.json(diagnostics);
 });
 
 // =====================
