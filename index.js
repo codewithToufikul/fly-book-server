@@ -4568,24 +4568,10 @@ app.get("/all-home-books", async (req, res) => {
     }
 
     // Optimized query with limit, sort, and projection
+    // Note: Removed strict projection to ensure all fields are returned
+    // This helps with backward compatibility if field names differ
     const posts = await adminPostCollections
-      .find(query, {
-        // Projection: only return necessary fields to reduce data transfer
-        projection: {
-          _id: 1,
-          postText: 1,
-          postImage: 1,
-          title: 1, // Add title field
-          category: 1,
-          date: 1,
-          time: 1,
-          userName: 1,
-          userImage: 1,
-          likes: 1,
-          likedBy: 1, // Add likedBy for like status
-          createdAt: 1,
-        }
-      })
+      .find(query)
       .sort({ 
         // Sort by createdAt first (faster), then date/time as fallback
         createdAt: -1,
@@ -4597,12 +4583,41 @@ app.get("/all-home-books", async (req, res) => {
       .toArray();
     
     // Map backend field names to frontend expected field names
-    const mappedPosts = posts.map(post => ({
-      ...post,
-      message: post.postText || '', // Map postText to message
-      image: post.postImage || '', // Map postImage to image
-      title: post.title || 'Untitled', // Ensure title exists
-    }));
+    // Support multiple possible field names from database
+    const mappedPosts = posts.map((post, index) => {
+      // Debug: log first post structure to understand data format
+      if (index === 0) {
+        console.log('Sample post from DB:', {
+          _id: post._id,
+          title: post.title,
+          postText: post.postText,
+          postImage: post.postImage,
+          message: post.message,
+          image: post.image,
+          allKeys: Object.keys(post)
+        });
+      }
+      
+      // Extract text content - try multiple field names
+      const textContent = post.postText || post.message || post.content || post.text || '';
+      
+      // Extract image URL - try multiple field names
+      const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
+      
+      // Extract title
+      const postTitle = post.title || post.heading || 'Untitled';
+      
+      return {
+        ...post,
+        // Map to frontend expected field names
+        message: textContent,
+        image: imageUrl,
+        title: postTitle,
+        // Keep original fields for backward compatibility
+        postText: textContent,
+        postImage: imageUrl,
+      };
+    });
     
     // Send response immediately
     res.set('Content-Type', 'application/json');
