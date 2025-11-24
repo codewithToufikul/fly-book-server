@@ -4729,25 +4729,20 @@ app.get("/all-home-books", async (req, res) => {
     const cached = postsCache.get(cacheKey);
     const now = Date.now();
     
-    // Try to return stale cache as fallback
-    if (cached && (now - cached.timestamp < STALE_TTL)) {
-      console.warn("Database error - returning stale cache as fallback");
+    // Try to return stale cache as fallback (even if very old, better than error)
+    if (cached && cached.data && Array.isArray(cached.data)) {
+      console.warn("Database error - returning cached data as fallback");
       res.set('Content-Type', 'application/json');
       res.set('X-Cache', 'STALE-FALLBACK');
       return res.json(cached.data);
     }
     
-    // If it's a timeout error and no stale cache, return empty array
-    if (error.message && (error.message.includes('timeout') || error.message.includes('maxTimeMS'))) {
-      console.warn("Query timeout - returning empty array");
-      return res.json([]);
-    }
-    
-    res.status(500).json({ 
-      error: "An error occurred while fetching posts",
-      message: error.message,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    // If no cache available, return empty array instead of error
+    // This prevents frontend crashes during presentation
+    console.warn("No cache available - returning empty array");
+    res.set('Content-Type', 'application/json');
+    res.set('X-Cache', 'MISS-FALLBACK');
+    return res.json([]);
   }
 });
 
@@ -4758,25 +4753,28 @@ async function fetchPostsFromDatabase(category, cacheKey) {
     await connectToMongo();
   } catch (dbError) {
     console.error("Database connection failed in fetchPostsFromDatabase:", dbError.message);
-    // Check if we have stale cache to return
+    // Check if we have stale cache to return (even if very old)
     const cached = postsCache.get(cacheKey);
-    if (cached) {
-      console.warn("Returning stale cache due to database connection failure");
+    if (cached && cached.data && Array.isArray(cached.data)) {
+      console.warn("Returning cached data due to database connection failure");
       return cached.data;
     }
-    // If no cache, throw error to be handled by caller
-    throw new Error("Database connection failed and no cached data available");
+    // If no cache, return empty array instead of throwing error
+    console.warn("No cache available - returning empty array");
+    return [];
   }
   
   // Verify collections are accessible
   if (!adminPostCollections) {
     // Try to return stale cache if available
     const cached = postsCache.get(cacheKey);
-    if (cached) {
-      console.warn("Collections not initialized - returning stale cache");
+    if (cached && cached.data && Array.isArray(cached.data)) {
+      console.warn("Collections not initialized - returning cached data");
       return cached.data;
     }
-    throw new Error("adminPostCollections is not initialized");
+    // If no cache, return empty array instead of throwing error
+    console.warn("Collections not initialized - returning empty array");
+    return [];
   }
   
   try {
@@ -4841,14 +4839,15 @@ async function fetchPostsFromDatabase(category, cacheKey) {
     });
   } catch (queryError) {
     console.error("Database query error in fetchPostsFromDatabase:", queryError.message);
-    // Try to return stale cache if available
+    // Try to return stale cache if available (even if very old)
     const cached = postsCache.get(cacheKey);
-    if (cached) {
-      console.warn("Query failed - returning stale cache");
+    if (cached && cached.data && Array.isArray(cached.data)) {
+      console.warn("Query failed - returning cached data");
       return cached.data;
     }
-    // Re-throw to be handled by caller
-    throw queryError;
+    // If no cache, return empty array instead of throwing error
+    console.warn("No cache available - returning empty array");
+    return [];
   }
 }
 
