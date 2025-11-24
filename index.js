@@ -27,7 +27,7 @@ try {
 } catch (_) {}
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 
 // Performance: Compression middleware (gzip/brotli)
 app.use(compression({
@@ -4636,78 +4636,93 @@ app.put("/admin/post-ai/:id", async (req, res) => {
 // Simple endpoint - no cache, direct database query
 app.get("/all-home-books", async (req, res) => {
   try {
-    // Ensure database connection
-    await connectToMongo();
+    // Set timeout for the entire request (5 seconds)
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error("Request timeout")), 5000)
+    );
     
-    // Verify collections are accessible
-    if (!adminPostCollections) {
-      return res.json([]);
-    }
-    
-    const { category } = req.query;
-    let query = {};
-
-    if (category && category !== "All") {
-      query.category = category;
-    }
-
-    // Simple database query
-    const posts = await adminPostCollections
-      .find(query, {
-        projection: {
-          _id: 1,
-          postText: 1,
-          message: 1,
-          content: 1,
-          text: 1,
-          postImage: 1,
-          image: 1,
-          imageUrl: 1,
-          photo: 1,
-          title: 1,
-          heading: 1,
-          category: 1,
-          date: 1,
-          time: 1,
-          userName: 1,
-          userImage: 1,
-          likes: 1,
-          likedBy: 1,
-          createdAt: 1,
-        }
-      })
-      .sort({ createdAt: -1 })
-      .limit(50)
-      .maxTimeMS(10000)
-      .toArray();
-    
-    // Map backend field names to frontend expected field names
-    const mappedPosts = posts.map((post) => {
-      const textContent = post.postText || post.message || post.content || post.text || '';
-      const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
-      const postTitle = post.title || post.heading || 'Untitled';
+    const queryPromise = (async () => {
+      // Ensure database connection with timeout
+      try {
+        await connectToMongo();
+      } catch (dbError) {
+        console.error("Database connection failed:", dbError.message);
+        return []; // Return empty array if connection fails
+      }
       
-      return {
-        _id: post._id,
-        message: textContent,
-        image: imageUrl,
-        title: postTitle,
-        postText: textContent,
-        postImage: imageUrl,
-        category: post.category,
-        date: post.date,
-        time: post.time,
-        userName: post.userName,
-        userImage: post.userImage,
-        likes: post.likes || 0,
-        likedBy: post.likedBy || [],
-        createdAt: post.createdAt,
-      };
-    });
+      // Verify collections are accessible
+      if (!adminPostCollections) {
+        return [];
+      }
+      
+      const { category } = req.query;
+      let query = {};
+
+      if (category && category !== "All") {
+        query.category = category;
+      }
+
+      // Simple database query with shorter timeout
+      const posts = await adminPostCollections
+        .find(query, {
+          projection: {
+            _id: 1,
+            postText: 1,
+            message: 1,
+            content: 1,
+            text: 1,
+            postImage: 1,
+            image: 1,
+            imageUrl: 1,
+            photo: 1,
+            title: 1,
+            heading: 1,
+            category: 1,
+            date: 1,
+            time: 1,
+            userName: 1,
+            userImage: 1,
+            likes: 1,
+            likedBy: 1,
+            createdAt: 1,
+          }
+        })
+        .sort({ createdAt: -1 })
+        .limit(50)
+        .maxTimeMS(5000) // 5 second query timeout
+        .toArray();
+      
+      // Map backend field names to frontend expected field names
+      return posts.map((post) => {
+        const textContent = post.postText || post.message || post.content || post.text || '';
+        const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
+        const postTitle = post.title || post.heading || 'Untitled';
+        
+        return {
+          _id: post._id,
+          message: textContent,
+          image: imageUrl,
+          title: postTitle,
+          postText: textContent,
+          postImage: imageUrl,
+          category: post.category,
+          date: post.date,
+          time: post.time,
+          userName: post.userName,
+          userImage: post.userImage,
+          likes: post.likes || 0,
+          likedBy: post.likedBy || [],
+          createdAt: post.createdAt,
+        };
+      });
+    })();
+    
+    // Race between query and timeout
+    const mappedPosts = await Promise.race([queryPromise, timeoutPromise]);
     
     res.json(mappedPosts || []);
   } catch (error) {
-    console.error("Error fetching posts:", error);
+    console.error("Error fetching posts:", error.message || error);
     res.json([]); // Return empty array on error
   }
 });
@@ -9278,6 +9293,15 @@ io.on("connection", (socket) => {
     socket.userId = userId; // Store userId in socket for disconnect handling
     
     try {
+      // Check database connection before updating
+      try {
+        await connectToMongo();
+      } catch (dbError) {
+        console.error("Database connection failed in joinUser:", dbError.message);
+        socket.emit("connected"); // Still emit connected even if DB fails
+        return; // Exit early if DB connection fails
+      }
+      
       // Mark user as online in database
       await usersCollections.updateOne(
         { _id: new ObjectId(userId) },
@@ -9294,7 +9318,8 @@ io.on("connection", (socket) => {
       
       console.log("user joined and marked online:", roomId);
     } catch (error) {
-      console.error("Error marking user online:", error);
+      console.error("Error marking user online:", error.message || error);
+      // Don't block socket connection if DB fails
     }
     
     socket.emit("connected");
@@ -9390,6 +9415,14 @@ io.on("connection", (socket) => {
     // Mark user as offline if userId is stored
     if (socket.userId) {
       try {
+        // Check database connection before updating
+        try {
+          await connectToMongo();
+        } catch (dbError) {
+          console.error("Database connection failed in disconnect:", dbError.message);
+          return; // Exit early if DB connection fails
+        }
+        
         await usersCollections.updateOne(
           { _id: new ObjectId(socket.userId) },
           { 
@@ -9405,7 +9438,8 @@ io.on("connection", (socket) => {
         
         console.log("user marked offline:", socket.userId);
       } catch (error) {
-        console.error("Error marking user offline:", error);
+        console.error("Error marking user offline:", error.message || error);
+        // Don't block disconnect if DB fails
       }
     }
   });
