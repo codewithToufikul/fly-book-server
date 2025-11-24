@@ -45,7 +45,7 @@ app.use(compression({
 // Middleware
 app.use(
   cors({
-    origin: ["https://flybook.com.bd", "http://localhost:5173"],
+    origin: ["https://flybook.com.bd", "https://flybook-f23c5.web.app", "http://localhost:5173"],
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allowedHeaders: ["Content-Type", "Authorization"],
     credentials: true,
@@ -4456,12 +4456,6 @@ app.post("/admin/post", async (req, res) => {
     }
     const result = await adminPostCollections.insertOne(postData);
     
-    // Clear posts cache when new post is added (invalidate all categories)
-    postsCache.clear();
-    // Also clear categories cache if needed
-    categoriesCache.data = null;
-    categoriesCache.timestamp = 0;
-    
     res.send({
       success: true,
       message: "posted successfully",
@@ -5683,76 +5677,27 @@ app.post("/admin/category-add", async (req, res) => {
   }
 });
 
-// Cache for categories (10 minute TTL)
-const categoriesCache = {
-  data: null,
-  timestamp: 0
-};
-const CATEGORIES_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
-
+// Simple endpoint - no cache, direct database query
 app.get("/home-category", async (req, res) => {
   try {
-    const now = Date.now();
-    
-    // Check cache first
-    if (categoriesCache.data && (now - categoriesCache.timestamp < CATEGORIES_CACHE_TTL)) {
-      res.set('Content-Type', 'application/json');
-      res.set('X-Cache', 'HIT');
-      return res.json({ success: true, categories: categoriesCache.data });
-    }
-    
     // Ensure database connection
-    try {
-      await connectToMongo();
-    } catch (dbError) {
-      console.error("Database connection error in /home-category:", dbError.message);
-      // Return cached data if available, even if stale
-      if (categoriesCache.data) {
-        res.set('Content-Type', 'application/json');
-        res.set('X-Cache', 'STALE-FALLBACK');
-        return res.json({ success: true, categories: categoriesCache.data });
-      }
-      return res.status(503).json({ 
-        success: false,
-        error: "Service temporarily unavailable",
-        categories: [] // Return empty array instead of error
-      });
-    }
+    await connectToMongo();
     
     // Verify collections are accessible
     if (!homeCategoryCollection) {
-      // Return cached data if available
-      if (categoriesCache.data) {
-        res.set('Content-Type', 'application/json');
-        res.set('X-Cache', 'STALE-FALLBACK');
-        return res.json({ success: true, categories: categoriesCache.data });
-      }
       return res.json({ success: true, categories: [] });
     }
     
     const categories = await homeCategoryCollection
       .find()
-      .limit(50) // Limit for performance
-      .maxTimeMS(5000) // 5 second timeout
+      .limit(50)
+      .maxTimeMS(10000)
       .toArray();
     
-    // Cache the result
-    categoriesCache.data = categories || [];
-    categoriesCache.timestamp = Date.now();
-    
-    res.json({ success: true, categories: categoriesCache.data });
+    res.json({ success: true, categories: categories || [] });
   } catch (error) {
     console.error("Error while getting category:", error);
-    
-    // Return cached data as fallback
-    if (categoriesCache.data) {
-      res.set('Content-Type', 'application/json');
-      res.set('X-Cache', 'STALE-FALLBACK');
-      return res.json({ success: true, categories: categoriesCache.data });
-    }
-    
-    // Return empty array instead of error
-    res.json({ success: true, categories: [] });
+    res.json({ success: true, categories: [] }); // Return empty array on error
   }
 });
 
