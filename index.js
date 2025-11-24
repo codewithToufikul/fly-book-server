@@ -331,12 +331,32 @@ const getPdfPageCount = async (pdfUrl) => {
   }
 };
 
+// Simple health check endpoint (no database needed)
+app.get("/health", (req, res) => {
+  res.json({ 
+    status: "ok", 
+    server: "running",
+    timestamp: new Date().toISOString(),
+    database: isConnected ? "connected" : "disconnected"
+  });
+});
+
 // Middleware to connect to MongoDB before every route
 // Skip database connection for routes that don't need it
 app.use(async (req, res, next) => {
-  // Skip database connection for root, health check, and diagnostics routes
-  if (req.path === "/" || req.path === "/health" || req.path === "/diagnostics") {
+  // Skip database connection for static files and health check routes
+  if (req.path === "/" || 
+      req.path === "/health" || 
+      req.path === "/diagnostics" ||
+      req.path === "/favicon.ico" ||
+      req.path.startsWith("/static/") ||
+      req.path.startsWith("/assets/")) {
     return next();
+  }
+  
+  // For critical endpoints with cache, skip middleware - let them handle their own fallback
+  if (req.path === "/all-home-books" || req.path === "/home-category") {
+    return next(); // These endpoints have their own fallback logic
   }
   
   try {
@@ -345,11 +365,19 @@ app.use(async (req, res, next) => {
   } catch (error) {
     console.error(`MongoDB connection error for ${req.method} ${req.path}:`, error.message);
     
-    // For critical endpoints, try to return cached/fallback data instead of error
-    // This ensures presentation doesn't break
-    if (req.path === "/all-home-books" || req.path === "/home-category") {
-      // These endpoints have their own fallback logic
-      return next(); // Let the endpoint handle its own fallback
+    // For presentation: Return empty data instead of error for most endpoints
+    // This prevents frontend crashes
+    if (req.method === "GET") {
+      // Return empty array/object instead of error
+      if (req.path.includes("/friends") || req.path.includes("/users")) {
+        return res.json([]);
+      }
+      if (req.path.includes("/profile")) {
+        return res.status(503).json({ 
+          error: "Service temporarily unavailable",
+          message: "Database connection failed. Please try again later."
+        });
+      }
     }
     
     // Provide more detailed error response
@@ -3245,8 +3273,11 @@ app.get("/all-friends", async (req, res) => {
       .find({
         _id: { $in: friendsIds.map(id => new ObjectId(id)) },
       })
-      .project({ password: 0, isOnline: 1, lastSeen: 1 }) // Exclude password, include online status
+      .project({ password: 0 }) // Exclude password only (MongoDB doesn't allow mixing inclusion/exclusion)
       .toArray();
+    
+    // Add isOnline and lastSeen to each friend (these fields should already exist in the document)
+    // No need to explicitly project them - they'll be included by default when we exclude password
 
     res.json(friends || []);
   } catch (error) {
