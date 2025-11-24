@@ -4722,73 +4722,103 @@ app.get("/all-home-books", async (req, res) => {
 
 // Helper function to fetch posts from database
 async function fetchPostsFromDatabase(category, cacheKey) {
-  // Ensure database connection
-  await connectToMongo();
+  try {
+    // Ensure database connection
+    await connectToMongo();
+  } catch (dbError) {
+    console.error("Database connection failed in fetchPostsFromDatabase:", dbError.message);
+    // Check if we have stale cache to return
+    const cached = postsCache.get(cacheKey);
+    if (cached) {
+      console.warn("Returning stale cache due to database connection failure");
+      return cached.data;
+    }
+    // If no cache, throw error to be handled by caller
+    throw new Error("Database connection failed and no cached data available");
+  }
   
   // Verify collections are accessible
   if (!adminPostCollections) {
+    // Try to return stale cache if available
+    const cached = postsCache.get(cacheKey);
+    if (cached) {
+      console.warn("Collections not initialized - returning stale cache");
+      return cached.data;
+    }
     throw new Error("adminPostCollections is not initialized");
   }
   
-  let query = {};
+  try {
+    let query = {};
 
-  if (category && category !== "All") {
-    query.category = category;
-  }
+    if (category && category !== "All") {
+      query.category = category;
+    }
 
-  // Optimized query with limit, sort, and projection
-  const posts = await adminPostCollections
-    .find(query, {
-      projection: {
-        _id: 1,
-        postText: 1,
-        message: 1,
-        content: 1,
-        text: 1,
-        postImage: 1,
-        image: 1,
-        imageUrl: 1,
-        photo: 1,
-        title: 1,
-        heading: 1,
-        category: 1,
-        date: 1,
-        time: 1,
-        userName: 1,
-        userImage: 1,
-        likes: 1,
-        likedBy: 1,
-        createdAt: 1,
-      }
-    })
-    .sort({ createdAt: -1 })
-    .limit(50)
-    .maxTimeMS(8000)
-    .toArray();
-  
-  // Map backend field names to frontend expected field names
-  return posts.map((post) => {
-    const textContent = post.postText || post.message || post.content || post.text || '';
-    const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
-    const postTitle = post.title || post.heading || 'Untitled';
+    // Optimized query with limit, sort, and projection
+    const posts = await adminPostCollections
+      .find(query, {
+        projection: {
+          _id: 1,
+          postText: 1,
+          message: 1,
+          content: 1,
+          text: 1,
+          postImage: 1,
+          image: 1,
+          imageUrl: 1,
+          photo: 1,
+          title: 1,
+          heading: 1,
+          category: 1,
+          date: 1,
+          time: 1,
+          userName: 1,
+          userImage: 1,
+          likes: 1,
+          likedBy: 1,
+          createdAt: 1,
+        }
+      })
+      .sort({ createdAt: -1 })
+      .limit(50)
+      .maxTimeMS(8000)
+      .toArray();
     
-    return {
-      _id: post._id,
-      message: textContent,
-      image: imageUrl,
-      title: postTitle,
-      postText: textContent,
-      postImage: imageUrl,
-      category: post.category,
-      date: post.date,
-      time: post.time,
-      userName: post.userName,
-      userImage: post.userImage,
-      likes: post.likes || 0,
-      likedBy: post.likedBy || [],
-      createdAt: post.createdAt,
-    };
-  });
+    // Map backend field names to frontend expected field names
+    return posts.map((post) => {
+      const textContent = post.postText || post.message || post.content || post.text || '';
+      const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
+      const postTitle = post.title || post.heading || 'Untitled';
+      
+      return {
+        _id: post._id,
+        message: textContent,
+        image: imageUrl,
+        title: postTitle,
+        postText: textContent,
+        postImage: imageUrl,
+        category: post.category,
+        date: post.date,
+        time: post.time,
+        userName: post.userName,
+        userImage: post.userImage,
+        likes: post.likes || 0,
+        likedBy: post.likedBy || [],
+        createdAt: post.createdAt,
+      };
+    });
+  } catch (queryError) {
+    console.error("Database query error in fetchPostsFromDatabase:", queryError.message);
+    // Try to return stale cache if available
+    const cached = postsCache.get(cacheKey);
+    if (cached) {
+      console.warn("Query failed - returning stale cache");
+      return cached.data;
+    }
+    // Re-throw to be handled by caller
+    throw queryError;
+  }
 }
 
 // Background cache refresh (stale-while-revalidate)
