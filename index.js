@@ -4633,152 +4633,25 @@ app.put("/admin/post-ai/:id", async (req, res) => {
   }
 });
 
-// In-memory cache for posts (5 minute TTL, 10 minute stale TTL)
-const postsCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes - fresh cache
-const STALE_TTL = 10 * 60 * 1000; // 10 minutes - stale but usable cache
-const pendingRequests = new Map(); // Request deduplication
-
+// Simple endpoint - no cache, direct database query
 app.get("/all-home-books", async (req, res) => {
-  try {
-    const { category } = req.query;
-    const cacheKey = category || "All";
-    
-    // Check cache first
-    const cached = postsCache.get(cacheKey);
-    const now = Date.now();
-    
-    if (cached) {
-      const age = now - cached.timestamp;
-      
-      // Fresh cache - return immediately
-      if (age < CACHE_TTL) {
-        res.set('Content-Type', 'application/json');
-        res.set('X-Cache', 'HIT');
-        return res.json(cached.data);
-      }
-      
-      // Stale cache - return it but refresh in background (stale-while-revalidate)
-      if (age < STALE_TTL) {
-        res.set('Content-Type', 'application/json');
-        res.set('X-Cache', 'STALE');
-        
-        // Trigger background refresh if not already in progress
-        if (!pendingRequests.has(cacheKey)) {
-          refreshCacheInBackground(cacheKey, category).catch(err => {
-            console.error("Background cache refresh failed:", err);
-          });
-        }
-        
-        return res.json(cached.data);
-      }
-    }
-    
-    // Check if request is already in progress (deduplication)
-    if (pendingRequests.has(cacheKey)) {
-      // Wait for the pending request to complete
-      try {
-        const result = await pendingRequests.get(cacheKey);
-        res.set('Content-Type', 'application/json');
-        res.set('X-Cache', 'DEDUPED');
-        return res.json(result);
-      } catch (error) {
-        // If pending request failed, try to get stale cache or proceed with new request
-        if (cached && (now - cached.timestamp < STALE_TTL)) {
-          res.set('Content-Type', 'application/json');
-          res.set('X-Cache', 'STALE-FALLBACK');
-          return res.json(cached.data);
-        }
-        // Continue to new request
-      }
-    }
-    
-    // Create new request promise
-    const requestPromise = fetchPostsFromDatabase(category, cacheKey);
-    pendingRequests.set(cacheKey, requestPromise);
-    
-    try {
-      const mappedPosts = await requestPromise;
-      
-      // Cache the result
-      postsCache.set(cacheKey, {
-        data: mappedPosts,
-        timestamp: Date.now()
-      });
-      
-      // Send response immediately
-      res.set('Content-Type', 'application/json');
-      res.set('X-Cache', 'MISS');
-      res.json(mappedPosts || []);
-    } finally {
-      // Remove from pending requests
-      pendingRequests.delete(cacheKey);
-    }
-    
-  } catch (error) {
-    console.error("Error fetching posts:", error);
-    
-    const { category } = req.query;
-    const cacheKey = category || "All";
-    const cached = postsCache.get(cacheKey);
-    const now = Date.now();
-    
-    // Try to return stale cache as fallback (even if very old, better than error)
-    if (cached && cached.data && Array.isArray(cached.data)) {
-      console.warn("Database error - returning cached data as fallback");
-      res.set('Content-Type', 'application/json');
-      res.set('X-Cache', 'STALE-FALLBACK');
-      return res.json(cached.data);
-    }
-    
-    // If no cache available, return empty array instead of error
-    // This prevents frontend crashes during presentation
-    console.warn("No cache available - returning empty array");
-    res.set('Content-Type', 'application/json');
-    res.set('X-Cache', 'MISS-FALLBACK');
-    return res.json([]);
-  }
-});
-
-// Helper function to fetch posts from database
-async function fetchPostsFromDatabase(category, cacheKey) {
   try {
     // Ensure database connection
     await connectToMongo();
-  } catch (dbError) {
-    console.error("Database connection failed in fetchPostsFromDatabase:", dbError.message);
-    // Check if we have stale cache to return (even if very old)
-    const cached = postsCache.get(cacheKey);
-    if (cached && cached.data && Array.isArray(cached.data)) {
-      console.warn("Returning cached data due to database connection failure");
-      return cached.data;
+    
+    // Verify collections are accessible
+    if (!adminPostCollections) {
+      return res.json([]);
     }
-    // If no cache, return empty array instead of throwing error
-    console.warn("No cache available - returning empty array");
-    return [];
-  }
-  
-  // Verify collections are accessible
-  if (!adminPostCollections) {
-    // Try to return stale cache if available
-    const cached = postsCache.get(cacheKey);
-    if (cached && cached.data && Array.isArray(cached.data)) {
-      console.warn("Collections not initialized - returning cached data");
-      return cached.data;
-    }
-    // If no cache, return empty array instead of throwing error
-    console.warn("Collections not initialized - returning empty array");
-    return [];
-  }
-  
-  try {
+    
+    const { category } = req.query;
     let query = {};
 
     if (category && category !== "All") {
       query.category = category;
     }
 
-    // Optimized query with limit, sort, and projection
+    // Simple database query
     const posts = await adminPostCollections
       .find(query, {
         projection: {
@@ -4805,11 +4678,11 @@ async function fetchPostsFromDatabase(category, cacheKey) {
       })
       .sort({ createdAt: -1 })
       .limit(50)
-      .maxTimeMS(8000)
+      .maxTimeMS(10000)
       .toArray();
     
     // Map backend field names to frontend expected field names
-    return posts.map((post) => {
+    const mappedPosts = posts.map((post) => {
       const textContent = post.postText || post.message || post.content || post.text || '';
       const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
       const postTitle = post.title || post.heading || 'Untitled';
@@ -4831,34 +4704,13 @@ async function fetchPostsFromDatabase(category, cacheKey) {
         createdAt: post.createdAt,
       };
     });
-  } catch (queryError) {
-    console.error("Database query error in fetchPostsFromDatabase:", queryError.message);
-    // Try to return stale cache if available (even if very old)
-    const cached = postsCache.get(cacheKey);
-    if (cached && cached.data && Array.isArray(cached.data)) {
-      console.warn("Query failed - returning cached data");
-      return cached.data;
-    }
-    // If no cache, return empty array instead of throwing error
-    console.warn("No cache available - returning empty array");
-    return [];
-  }
-}
-
-// Background cache refresh (stale-while-revalidate)
-async function refreshCacheInBackground(cacheKey, category) {
-  try {
-    const mappedPosts = await fetchPostsFromDatabase(category, cacheKey);
-    postsCache.set(cacheKey, {
-      data: mappedPosts,
-      timestamp: Date.now()
-    });
-    console.log(`✅ Background cache refreshed for: ${cacheKey}`);
+    
+    res.json(mappedPosts || []);
   } catch (error) {
-    console.error(`❌ Background cache refresh failed for ${cacheKey}:`, error.message);
-    // Don't throw - this is background refresh, failure is acceptable
+    console.error("Error fetching posts:", error);
+    res.json([]); // Return empty array on error
   }
-}
+});
 
 app.get("/all-home-post/:id", async (req, res) => {
   const id = req.params.id;
