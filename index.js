@@ -334,8 +334,8 @@ const getPdfPageCount = async (pdfUrl) => {
 // Middleware to connect to MongoDB before every route
 // Skip database connection for routes that don't need it
 app.use(async (req, res, next) => {
-  // Skip database connection for root and health check routes
-  if (req.path === "/" || req.path === "/health") {
+  // Skip database connection for root, health check, and diagnostics routes
+  if (req.path === "/" || req.path === "/health" || req.path === "/diagnostics") {
     return next();
   }
   
@@ -344,6 +344,13 @@ app.use(async (req, res, next) => {
     next();
   } catch (error) {
     console.error(`MongoDB connection error for ${req.method} ${req.path}:`, error.message);
+    
+    // For critical endpoints, try to return cached/fallback data instead of error
+    // This ensures presentation doesn't break
+    if (req.path === "/all-home-books" || req.path === "/home-category") {
+      // These endpoints have their own fallback logic
+      return next(); // Let the endpoint handle its own fallback
+    }
     
     // Provide more detailed error response
     const errorResponse = {
@@ -2494,8 +2501,17 @@ app.get("/profile", async (req, res) => {
   }
 
   try {
-    // Ensure database connection
-    await connectToMongo();
+    // Ensure database connection with retry
+    try {
+      await connectToMongo();
+    } catch (dbError) {
+      console.error("Database connection error in /profile:", dbError.message);
+      // Return a basic error response instead of crashing
+      return res.status(503).json({ 
+        error: "Service temporarily unavailable",
+        message: "Database connection failed. Please try again later."
+      });
+    }
     
     // Check if JWT_SECRET is set
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
@@ -2504,7 +2520,14 @@ app.get("/profile", async (req, res) => {
       return res.status(500).json({ error: "Server configuration error" });
     }
 
-    const decoded = jwt.verify(token, jwtSecret);
+    let decoded;
+    try {
+      decoded = jwt.verify(token, jwtSecret);
+    } catch (jwtError) {
+      console.error("JWT Verification Error:", jwtError.message);
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
     if (!decoded.number) {
       return res.status(400).json({ error: "Invalid token payload." });
     }
@@ -2516,25 +2539,28 @@ app.get("/profile", async (req, res) => {
 
     res.json({
       id: user._id,
-      name: user.name,
-      userName: user.userName,
-      email: user.email,
-      number: user.number,
-      profileImage: user.profileImage,
-      verificationStatus: user.verificationStatus,
-      work: user.work,
-      studies: user.studies,
-      currentCity: user.currentCity,
-      hometown: user.hometown,
-      coverImage: user.coverImage,
-      friendRequestsSent: user.friendRequestsSent,
-      friendRequestsReceived: user.friendRequestsReceived,
-      friends: user.friends,
-      role: user.role,
+      name: user.name || '',
+      userName: user.userName || '',
+      email: user.email || '',
+      number: user.number || '',
+      profileImage: user.profileImage || 'https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg',
+      verificationStatus: user.verificationStatus || false,
+      work: user.work || '',
+      studies: user.studies || '',
+      currentCity: user.currentCity || '',
+      hometown: user.hometown || '',
+      coverImage: user.coverImage || 'https://i.ibb.co.com/xmyN9fT/freepik-expand-75906-min.png',
+      friendRequestsSent: user.friendRequestsSent || [],
+      friendRequestsReceived: user.friendRequestsReceived || [],
+      friends: user.friends || [],
+      role: user.role || 'user',
     });
   } catch (error) {
-    console.error("JWT Verification Error:", error.message);
-    res.status(401).json({ error: "Invalid or expired token." });
+    console.error("Error in /profile endpoint:", error);
+    res.status(500).json({ 
+      error: "Internal server error",
+      message: "An unexpected error occurred. Please try again later."
+    });
   }
 });
 
@@ -3182,7 +3208,25 @@ app.get("/all-friends", async (req, res) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    // Ensure database connection
+    try {
+      await connectToMongo();
+    } catch (dbError) {
+      console.error("Database connection error in /all-friends:", dbError.message);
+      return res.status(503).json({ 
+        error: "Service temporarily unavailable",
+        message: "Database connection failed. Please try again later."
+      });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, JWT_SECRET);
+    } catch (jwtError) {
+      console.error("JWT Verification Error:", jwtError.message);
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
     const user = await usersCollections.findOne({ number: decoded.number });
 
     if (!user) {
@@ -3192,16 +3236,23 @@ app.get("/all-friends", async (req, res) => {
     // Check if friends array exists, otherwise use empty array
     const friendsIds = user.friends || [];
 
+    // If no friends, return empty array immediately
+    if (!friendsIds.length) {
+      return res.json([]);
+    }
+
     const friends = await usersCollections
       .find({
-        _id: { $in: friendsIds },
+        _id: { $in: friendsIds.map(id => new ObjectId(id)) },
       })
+      .project({ password: 0, isOnline: 1, lastSeen: 1 }) // Exclude password, include online status
       .toArray();
 
-    res.send(friends);
+    res.json(friends || []);
   } catch (error) {
     console.error("Error fetching friends:", error);
-    res.status(401).json({ error: "Invalid or expired token." });
+    // Return empty array instead of error to prevent frontend crash
+    res.json([]);
   }
 });
 
@@ -4374,8 +4425,11 @@ app.post("/admin/post", async (req, res) => {
     }
     const result = await adminPostCollections.insertOne(postData);
     
-    // Clear posts cache when new post is added
+    // Clear posts cache when new post is added (invalidate all categories)
     postsCache.clear();
+    // Also clear categories cache if needed
+    categoriesCache.data = null;
+    categoriesCache.timestamp = 0;
     
     res.send({
       success: true,
@@ -4554,9 +4608,11 @@ app.put("/admin/post-ai/:id", async (req, res) => {
   }
 });
 
-// In-memory cache for posts (5 minute TTL)
+// In-memory cache for posts (5 minute TTL, 10 minute stale TTL)
 const postsCache = new Map();
-const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+const CACHE_TTL = 5 * 60 * 1000; // 5 minutes - fresh cache
+const STALE_TTL = 10 * 60 * 1000; // 10 minutes - stale but usable cache
+const pendingRequests = new Map(); // Request deduplication
 
 app.get("/all-home-books", async (req, res) => {
   try {
@@ -4565,108 +4621,92 @@ app.get("/all-home-books", async (req, res) => {
     
     // Check cache first
     const cached = postsCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      res.set('Content-Type', 'application/json');
-      res.set('X-Cache', 'HIT');
-      return res.json(cached.data);
-    }
+    const now = Date.now();
     
-    // Ensure database connection
-    await connectToMongo();
-    
-    // Verify collections are accessible
-    if (!adminPostCollections) {
-      throw new Error("adminPostCollections is not initialized");
-    }
-    
-    let query = {};
-
-    if (category && category !== "All") {
-      query.category = category;
-    }
-
-    // Optimized query with limit, sort, and projection
-    // Include all possible field name variations for backward compatibility
-    const posts = await adminPostCollections
-      .find(query, {
-        projection: {
-          _id: 1,
-          // Text content fields (multiple variations)
-          postText: 1,
-          message: 1,
-          content: 1,
-          text: 1,
-          // Image fields (multiple variations)
-          postImage: 1,
-          image: 1,
-          imageUrl: 1,
-          photo: 1,
-          // Title fields
-          title: 1,
-          heading: 1,
-          // Other essential fields
-          category: 1,
-          date: 1,
-          time: 1,
-          userName: 1,
-          userImage: 1,
-          likes: 1,
-          likedBy: 1,
-          createdAt: 1,
+    if (cached) {
+      const age = now - cached.timestamp;
+      
+      // Fresh cache - return immediately
+      if (age < CACHE_TTL) {
+        res.set('Content-Type', 'application/json');
+        res.set('X-Cache', 'HIT');
+        return res.json(cached.data);
+      }
+      
+      // Stale cache - return it but refresh in background (stale-while-revalidate)
+      if (age < STALE_TTL) {
+        res.set('Content-Type', 'application/json');
+        res.set('X-Cache', 'STALE');
+        
+        // Trigger background refresh if not already in progress
+        if (!pendingRequests.has(cacheKey)) {
+          refreshCacheInBackground(cacheKey, category).catch(err => {
+            console.error("Background cache refresh failed:", err);
+          });
         }
-      })
-      .sort({ createdAt: -1 }) // Sort only by createdAt (faster, index exists)
-      .limit(50) // Reduced limit from 100 to 50 for faster queries
-      .maxTimeMS(8000) // 8 second query timeout
-      .toArray();
+        
+        return res.json(cached.data);
+      }
+    }
     
-    // Map backend field names to frontend expected field names
-    // Support multiple possible field names from database
-    const mappedPosts = posts.map((post) => {
-      // Extract text content - try multiple field names
-      const textContent = post.postText || post.message || post.content || post.text || '';
-      
-      // Extract image URL - try multiple field names
-      const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
-      
-      // Extract title
-      const postTitle = post.title || post.heading || 'Untitled';
-      
-      return {
-        _id: post._id,
-        // Map to frontend expected field names
-        message: textContent,
-        image: imageUrl,
-        title: postTitle,
-        // Keep original fields for backward compatibility
-        postText: textContent,
-        postImage: imageUrl,
-        // Other essential fields
-        category: post.category,
-        date: post.date,
-        time: post.time,
-        userName: post.userName,
-        userImage: post.userImage,
-        likes: post.likes || 0,
-        likedBy: post.likedBy || [],
-        createdAt: post.createdAt,
-      };
-    });
+    // Check if request is already in progress (deduplication)
+    if (pendingRequests.has(cacheKey)) {
+      // Wait for the pending request to complete
+      try {
+        const result = await pendingRequests.get(cacheKey);
+        res.set('Content-Type', 'application/json');
+        res.set('X-Cache', 'DEDUPED');
+        return res.json(result);
+      } catch (error) {
+        // If pending request failed, try to get stale cache or proceed with new request
+        if (cached && (now - cached.timestamp < STALE_TTL)) {
+          res.set('Content-Type', 'application/json');
+          res.set('X-Cache', 'STALE-FALLBACK');
+          return res.json(cached.data);
+        }
+        // Continue to new request
+      }
+    }
     
-    // Cache the result
-    postsCache.set(cacheKey, {
-      data: mappedPosts,
-      timestamp: Date.now()
-    });
+    // Create new request promise
+    const requestPromise = fetchPostsFromDatabase(category, cacheKey);
+    pendingRequests.set(cacheKey, requestPromise);
     
-    // Send response immediately
-    res.set('Content-Type', 'application/json');
-    res.set('X-Cache', 'MISS');
-    res.json(mappedPosts || []);
+    try {
+      const mappedPosts = await requestPromise;
+      
+      // Cache the result
+      postsCache.set(cacheKey, {
+        data: mappedPosts,
+        timestamp: Date.now()
+      });
+      
+      // Send response immediately
+      res.set('Content-Type', 'application/json');
+      res.set('X-Cache', 'MISS');
+      res.json(mappedPosts || []);
+    } finally {
+      // Remove from pending requests
+      pendingRequests.delete(cacheKey);
+    }
+    
   } catch (error) {
     console.error("Error fetching posts:", error);
     
-    // If it's a timeout error, return empty array instead of error
+    const { category } = req.query;
+    const cacheKey = category || "All";
+    const cached = postsCache.get(cacheKey);
+    const now = Date.now();
+    
+    // Try to return stale cache as fallback
+    if (cached && (now - cached.timestamp < STALE_TTL)) {
+      console.warn("Database error - returning stale cache as fallback");
+      res.set('Content-Type', 'application/json');
+      res.set('X-Cache', 'STALE-FALLBACK');
+      return res.json(cached.data);
+    }
+    
+    // If it's a timeout error and no stale cache, return empty array
     if (error.message && (error.message.includes('timeout') || error.message.includes('maxTimeMS'))) {
       console.warn("Query timeout - returning empty array");
       return res.json([]);
@@ -4679,6 +4719,92 @@ app.get("/all-home-books", async (req, res) => {
     });
   }
 });
+
+// Helper function to fetch posts from database
+async function fetchPostsFromDatabase(category, cacheKey) {
+  // Ensure database connection
+  await connectToMongo();
+  
+  // Verify collections are accessible
+  if (!adminPostCollections) {
+    throw new Error("adminPostCollections is not initialized");
+  }
+  
+  let query = {};
+
+  if (category && category !== "All") {
+    query.category = category;
+  }
+
+  // Optimized query with limit, sort, and projection
+  const posts = await adminPostCollections
+    .find(query, {
+      projection: {
+        _id: 1,
+        postText: 1,
+        message: 1,
+        content: 1,
+        text: 1,
+        postImage: 1,
+        image: 1,
+        imageUrl: 1,
+        photo: 1,
+        title: 1,
+        heading: 1,
+        category: 1,
+        date: 1,
+        time: 1,
+        userName: 1,
+        userImage: 1,
+        likes: 1,
+        likedBy: 1,
+        createdAt: 1,
+      }
+    })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .maxTimeMS(8000)
+    .toArray();
+  
+  // Map backend field names to frontend expected field names
+  return posts.map((post) => {
+    const textContent = post.postText || post.message || post.content || post.text || '';
+    const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
+    const postTitle = post.title || post.heading || 'Untitled';
+    
+    return {
+      _id: post._id,
+      message: textContent,
+      image: imageUrl,
+      title: postTitle,
+      postText: textContent,
+      postImage: imageUrl,
+      category: post.category,
+      date: post.date,
+      time: post.time,
+      userName: post.userName,
+      userImage: post.userImage,
+      likes: post.likes || 0,
+      likedBy: post.likedBy || [],
+      createdAt: post.createdAt,
+    };
+  });
+}
+
+// Background cache refresh (stale-while-revalidate)
+async function refreshCacheInBackground(cacheKey, category) {
+  try {
+    const mappedPosts = await fetchPostsFromDatabase(category, cacheKey);
+    postsCache.set(cacheKey, {
+      data: mappedPosts,
+      timestamp: Date.now()
+    });
+    console.log(`✅ Background cache refreshed for: ${cacheKey}`);
+  } catch (error) {
+    console.error(`❌ Background cache refresh failed for ${cacheKey}:`, error.message);
+    // Don't throw - this is background refresh, failure is acceptable
+  }
+}
 
 app.get("/all-home-post/:id", async (req, res) => {
   const id = req.params.id;
@@ -5497,25 +5623,76 @@ app.post("/admin/category-add", async (req, res) => {
   }
 });
 
+// Cache for categories (10 minute TTL)
+const categoriesCache = {
+  data: null,
+  timestamp: 0
+};
+const CATEGORIES_CACHE_TTL = 10 * 60 * 1000; // 10 minutes
+
 app.get("/home-category", async (req, res) => {
   try {
+    const now = Date.now();
+    
+    // Check cache first
+    if (categoriesCache.data && (now - categoriesCache.timestamp < CATEGORIES_CACHE_TTL)) {
+      res.set('Content-Type', 'application/json');
+      res.set('X-Cache', 'HIT');
+      return res.json({ success: true, categories: categoriesCache.data });
+    }
+    
     // Ensure database connection
-    await connectToMongo();
+    try {
+      await connectToMongo();
+    } catch (dbError) {
+      console.error("Database connection error in /home-category:", dbError.message);
+      // Return cached data if available, even if stale
+      if (categoriesCache.data) {
+        res.set('Content-Type', 'application/json');
+        res.set('X-Cache', 'STALE-FALLBACK');
+        return res.json({ success: true, categories: categoriesCache.data });
+      }
+      return res.status(503).json({ 
+        success: false,
+        error: "Service temporarily unavailable",
+        categories: [] // Return empty array instead of error
+      });
+    }
     
     // Verify collections are accessible
     if (!homeCategoryCollection) {
-      throw new Error("homeCategoryCollection is not initialized");
+      // Return cached data if available
+      if (categoriesCache.data) {
+        res.set('Content-Type', 'application/json');
+        res.set('X-Cache', 'STALE-FALLBACK');
+        return res.json({ success: true, categories: categoriesCache.data });
+      }
+      return res.json({ success: true, categories: [] });
     }
     
-    const categories = await homeCategoryCollection.find().toArray();
-    res.json({ success: true, categories: categories || [] });
+    const categories = await homeCategoryCollection
+      .find()
+      .limit(50) // Limit for performance
+      .maxTimeMS(5000) // 5 second timeout
+      .toArray();
+    
+    // Cache the result
+    categoriesCache.data = categories || [];
+    categoriesCache.timestamp = Date.now();
+    
+    res.json({ success: true, categories: categoriesCache.data });
   } catch (error) {
     console.error("Error while getting category:", error);
-    res.status(500).json({ 
-      error: "An error occurred while getting category",
-      message: error.message,
-      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-    });
+    
+    // Return cached data as fallback
+    if (categoriesCache.data) {
+      res.set('Content-Type', 'application/json');
+      res.set('X-Cache', 'STALE-FALLBACK');
+      return res.json({ success: true, categories: categoriesCache.data });
+    }
+    
+    // Return empty array instead of error
+    res.json({ success: true, categories: [] });
   }
 });
 
