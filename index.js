@@ -27,7 +27,7 @@ try {
 } catch (_) {}
 
 const app = express();
-const port = process.env.PORT || 5000;
+const port = process.env.PORT || 3000;
 
 // Performance: Compression middleware (gzip/brotli)
 app.use(compression({
@@ -2399,7 +2399,7 @@ app.get("/search", async (req, res) => {
 // User Registration Route
 app.post("/users/register", async (req, res) => {
   try {
-    const { name, email, number, password, userLocation } = req.body;
+    const { name, email, number, password, userLocation, referrerUsername } = req.body;
     console.log(userLocation);
     // Check if user already exists
     const existingUser = await usersCollections.findOne({ number });
@@ -2426,6 +2426,24 @@ app.post("/users/register", async (req, res) => {
       }
     }
 
+    // Handle referrer if provided
+    let referrerId = null;
+    let referrerName = null;
+    
+    if (referrerUsername && referrerUsername.trim() !== "") {
+      const referrer = await usersCollections.findOne({ 
+        userName: referrerUsername.trim() 
+      });
+      
+      if (referrer) {
+        referrerId = referrer._id;
+        referrerName = referrer.userName;
+      } else {
+        // Referrer username not found, but continue registration
+        console.log(`Referrer username "${referrerUsername}" not found, continuing without referrer`);
+      }
+    }
+
     // Hash the password
     const hashedPassword = await bcrypt.hash(password, 10);
 
@@ -2447,6 +2465,10 @@ app.post("/users/register", async (req, res) => {
       role: "user",
       profileImage:
         "https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg",
+      referrerId: referrerId,
+      referrerName: referrerName,
+      referredBy: referrerName || null,
+      createdAt: new Date(),
     };
     const result = await usersCollections.insertOne(newUser);
 
@@ -2599,6 +2621,8 @@ app.get("/profile", async (req, res) => {
       friendRequestsReceived: user.friendRequestsReceived || [],
       friends: user.friends || [],
       role: user.role || 'user',
+      referrerId: user.referrerId || null,
+      referrerName: user.referrerName || user.referredBy || null,
     });
   } catch (error) {
     console.error("Error in /profile endpoint:", error);
@@ -2835,6 +2859,67 @@ app.get("/users/nearby", async (req, res) => {
     res.status(500).send({
       success: false,
       message: "An unexpected error occurred.",
+    });
+  }
+});
+
+// Get referred users by current user
+app.get("/users/referred", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    await connectToMongo();
+    
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    if (!jwtSecret) {
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, jwtSecret);
+    } catch (jwtError) {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    if (!decoded.number) {
+      return res.status(400).json({ error: "Invalid token payload." });
+    }
+
+    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Find all users who were referred by this user
+    const referredUsers = await usersCollections
+      .find({ 
+        referrerId: currentUser._id 
+      })
+      .project({
+        _id: 1,
+        name: 1,
+        userName: 1,
+        profileImage: 1,
+        createdAt: 1,
+      })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json({
+      success: true,
+      data: referredUsers,
+      count: referredUsers.length,
+    });
+  } catch (error) {
+    console.error("Error fetching referred users:", error);
+    res.status(500).json({ 
+      error: "Internal server error",
+      message: "Failed to fetch referred users."
     });
   }
 });
