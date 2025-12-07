@@ -2903,9 +2903,9 @@ app.post("/wallet/add-coins", async (req, res) => {
       return res.status(400).json({ error: "Invalid minutes value." });
     }
 
-    // Calculate coins: 5 coins per minute
-    const coinsToAdd = Math.floor(minutes * 5);
-    console.log(`💰 Calculating: ${minutes} minute(s) × 5 = ${coinsToAdd} coins`);
+    // Calculate coins: 60 coins per minute
+    const coinsToAdd = Math.floor(minutes * 60);
+    console.log(`💰 Calculating: ${minutes} minute(s) × 60 = ${coinsToAdd} coins`);
 
     // Get current user
     const user = await usersCollections.findOne({ number: decoded.number });
