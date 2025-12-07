@@ -2469,6 +2469,8 @@ app.post("/users/register", async (req, res) => {
       referrerName: referrerName,
       referredBy: referrerName || null,
       createdAt: new Date(),
+      flyWallet: 0,
+      wallet: 0,
     };
     const result = await usersCollections.insertOne(newUser);
 
@@ -2623,6 +2625,8 @@ app.get("/profile", async (req, res) => {
       role: user.role || 'user',
       referrerId: user.referrerId || null,
       referrerName: user.referrerName || user.referredBy || null,
+      flyWallet: user.flyWallet ?? 0, // Use nullish coalescing to handle 0 correctly
+      wallet: user.wallet ?? 0,
     });
   } catch (error) {
     console.error("Error in /profile endpoint:", error);
@@ -2859,6 +2863,163 @@ app.get("/users/nearby", async (req, res) => {
     res.status(500).send({
       success: false,
       message: "An unexpected error occurred.",
+    });
+  }
+});
+
+// Add coins to flyWallet based on browsing time
+app.post("/wallet/add-coins", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    await connectToMongo();
+    
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    if (!jwtSecret) {
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, jwtSecret);
+    } catch (jwtError) {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    if (!decoded.number) {
+      return res.status(400).json({ error: "Invalid token payload." });
+    }
+
+    const { minutes } = req.body;
+    
+    console.log(`💰 Coin add request: ${minutes} minute(s) from user ${decoded.number}`);
+    
+    if (!minutes || minutes <= 0) {
+      console.error("❌ Invalid minutes value:", minutes);
+      return res.status(400).json({ error: "Invalid minutes value." });
+    }
+
+    // Calculate coins: 5 coins per minute
+    const coinsToAdd = Math.floor(minutes * 5);
+    console.log(`💰 Calculating: ${minutes} minute(s) × 5 = ${coinsToAdd} coins`);
+
+    // Get current user
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      console.error("❌ User not found:", decoded.number);
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Update flyWallet
+    const currentBalance = user.flyWallet || 0;
+    const newBalance = currentBalance + coinsToAdd;
+
+    console.log(`💰 Wallet update: ${currentBalance} + ${coinsToAdd} = ${newBalance}`);
+
+    const result = await usersCollections.updateOne(
+      { number: decoded.number },
+      { $set: { flyWallet: newBalance } }
+    );
+
+    if (result.matchedCount === 0) {
+      console.error("❌ User not found for update:", decoded.number);
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    console.log(`✅ Successfully updated wallet for user ${decoded.number}`);
+
+    // Emit socket event to update client in real-time
+    if (io) {
+      io.to(user._id.toString()).emit("walletUpdated", {
+        flyWallet: newBalance,
+        wallet: user.wallet || 0,
+        coinsAdded: coinsToAdd,
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Added ${coinsToAdd} coins to flyWallet`,
+      coinsAdded: coinsToAdd,
+      flyWallet: newBalance,
+      wallet: user.wallet || 0,
+    });
+  } catch (error) {
+    console.error("Error adding coins:", error);
+    res.status(500).json({ 
+      error: "Internal server error",
+      message: "Failed to add coins."
+    });
+  }
+});
+
+// Update wallet balance
+app.put("/wallet/update", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    await connectToMongo();
+    
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    if (!jwtSecret) {
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    let decoded;
+    try {
+      decoded = jwt.verify(token, jwtSecret);
+    } catch (jwtError) {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    if (!decoded.number) {
+      return res.status(400).json({ error: "Invalid token payload." });
+    }
+
+    const { flyWallet, wallet } = req.body;
+    
+    if (flyWallet === undefined && wallet === undefined) {
+      return res.status(400).json({ error: "At least one wallet field is required." });
+    }
+
+    const updateFields = {};
+    if (flyWallet !== undefined) {
+      updateFields.flyWallet = parseFloat(flyWallet) || 0;
+    }
+    if (wallet !== undefined) {
+      updateFields.wallet = parseFloat(wallet) || 0;
+    }
+
+    const result = await usersCollections.updateOne(
+      { number: decoded.number },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const updatedUser = await usersCollections.findOne({ number: decoded.number });
+
+    res.json({
+      success: true,
+      message: "Wallet updated successfully",
+      flyWallet: updatedUser.flyWallet || 0,
+      wallet: updatedUser.wallet || 0,
+    });
+  } catch (error) {
+    console.error("Error updating wallet:", error);
+    res.status(500).json({ 
+      error: "Internal server error",
+      message: "Failed to update wallet."
     });
   }
 });
