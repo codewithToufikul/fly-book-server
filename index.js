@@ -2922,7 +2922,10 @@ app.post("/wallet/add-coins", async (req, res) => {
 
     const result = await usersCollections.updateOne(
       { number: decoded.number },
-      { $set: { flyWallet: newBalance } }
+      { 
+        $set: { flyWallet: newBalance },
+        $inc: { totalBrowsingMinutes: minutes }
+      }
     );
 
     if (result.matchedCount === 0) {
@@ -3020,6 +3023,73 @@ app.put("/wallet/update", async (req, res) => {
     res.status(500).json({ 
       error: "Internal server error",
       message: "Failed to update wallet."
+    });
+  }
+});
+
+
+
+// Admin: Update any user's wallet
+app.put("/admin/wallet/update-user", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    await connectToMongo();
+  
+    // For now, we rely on the token validity
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    if (!jwtSecret) {
+      return res.status(500).json({ error: "Server configuration error" });
+    }
+
+    try {
+      jwt.verify(token, jwtSecret);
+    } catch (jwtError) {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    const { userId, flyWallet, wallet } = req.body;
+    
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required." });
+    }
+
+    const updateFields = {};
+    if (flyWallet !== undefined && flyWallet !== "") {
+      updateFields.flyWallet = parseFloat(flyWallet);
+    }
+    if (wallet !== undefined && wallet !== "") {
+      updateFields.wallet = parseFloat(wallet);
+    }
+
+    if (Object.keys(updateFields).length === 0) {
+      return res.status(400).json({ error: "No wallet fields to update." });
+    }
+
+    const result = await usersCollections.updateOne(
+      { _id: new ObjectId(userId) },
+      { $set: updateFields }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    res.json({
+      success: true,
+      message: "User wallet updated successfully",
+      updatedFields: updateFields
+    });
+
+  } catch (error) {
+    console.error("Error updating user wallet:", error);
+    res.status(500).json({ 
+      error: "Internal server error",
+      message: "Failed to update user wallet."
     });
   }
 });
