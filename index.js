@@ -899,6 +899,9 @@ if (!process.env.DB_USER || !process.env.DB_PASS) {
   console.error("⚠️  WARNING: DB_USER or DB_PASS is not set in environment variables!");
   console.error("⚠️  Database connection will fail without these variables.");
 }
+
+// FlyWallet Coin to Taka conversion rate
+const COIN_TO_TAKA_RATE = 100; // 100 coins = 1 Taka
 const channelsCollection = db.collection("Channels");
 const channelessagesCollection = db.collection("channelMessages");
 const coursesCollection = db.collection("coursesCollection");
@@ -939,6 +942,8 @@ const employersCollection = db.collection("employersCollection");
 // Freelance Marketplace collections
 const projectsCollection = db.collection("projectsCollection");
 const proposalsCollection = db.collection("proposalsCollection");
+// Locations collection for wallate shop
+const locationsCollection = db.collection("locationsCollection");
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -2904,8 +2909,8 @@ app.post("/wallet/add-coins", async (req, res) => {
     }
 
     // Calculate coins: 60 coins per minute
-    const coinsToAdd = Math.floor(minutes * 60);
-    console.log(`💰 Calculating: ${minutes} minute(s) × 60 = ${coinsToAdd} coins`);
+    const coinsToAdd = Math.floor(minutes * 100);
+    console.log(`💰 Calculating: ${minutes} minute(s) × 100 = ${coinsToAdd} coins`);
 
     // Get current user
     const user = await usersCollections.findOne({ number: decoded.number });
@@ -3151,6 +3156,205 @@ app.get("/users/referred", async (req, res) => {
     res.status(500).json({ 
       error: "Internal server error",
       message: "Failed to fetch referred users."
+    });
+  }
+});
+
+// Admin: Get all users referral history with statistics
+app.get("/admin/referrals/history", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    await connectToMongo();
+    
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const admin = await usersCollections.findOne({ number: decoded.number });
+    
+    if (!admin || admin.role !== "admin") {
+      return res.status(403).json({ error: "Access denied. Admin only." });
+    }
+
+    const { search, page = 1, limit = 50 } = req.query;
+    const skip = (page - 1) * limit;
+
+    // Build search query
+    let searchQuery = {};
+    if (search) {
+      searchQuery = {
+        $or: [
+          { name: { $regex: search, $options: "i" } },
+          { userName: { $regex: search, $options: "i" } },
+          { email: { $regex: search, $options: "i" } }
+        ]
+      };
+    }
+
+    // Get all users with referral info
+    const allUsers = await usersCollections
+      .find(searchQuery)
+      .project({
+        _id: 1,
+        name: 1,
+        userName: 1,
+        email: 1,
+        profileImage: 1,
+        referrerId: 1,
+        referrerName: 1,
+        createdAt: 1,
+        verificationStatus: 1
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(parseInt(limit))
+      .toArray();
+
+    // Get referral counts for each user
+    const usersWithReferralData = await Promise.all(
+      allUsers.map(async (user) => {
+        // Count how many users this user has referred
+        const referralCount = await usersCollections.countDocuments({
+          referrerId: user._id
+        });
+
+        // Get referrer details if exists
+        let referrerDetails = null;
+        if (user.referrerId) {
+          referrerDetails = await usersCollections.findOne(
+            { _id: user.referrerId },
+            { projection: { name: 1, userName: 1, profileImage: 1 } }
+          );
+        }
+
+        // Get list of users referred by this user
+        const referredUsers = await usersCollections
+          .find({ referrerId: user._id })
+          .project({
+            _id: 1,
+            name: 1,
+            userName: 1,
+            profileImage: 1,
+            createdAt: 1
+          })
+          .sort({ createdAt: -1 })
+          .limit(10)
+          .toArray();
+
+        return {
+          ...user,
+          referralCount,
+          referrerDetails,
+          referredUsers,
+          hasReferrer: !!user.referrerId,
+          hasReferrals: referralCount > 0
+        };
+      })
+    );
+
+    console.log(`📊 Admin Referral Query: Found ${usersWithReferralData.length} users`);
+    console.log(`📊 Sample user data:`, usersWithReferralData[0]);
+
+    // Calculate overall statistics
+    const totalUsers = await usersCollections.countDocuments(searchQuery);
+    const usersWithReferrer = await usersCollections.countDocuments({
+      ...searchQuery,
+      referrerId: { $exists: true, $ne: null }
+    });
+
+    // Get top referrers
+    const topReferrers = await usersCollections.aggregate([
+      {
+        $lookup: {
+          from: "usersCollections",
+          localField: "_id",
+          foreignField: "referrerId",
+          as: "referrals"
+        }
+      },
+      {
+        $addFields: {
+          referralCount: { $size: "$referrals" }
+        }
+      },
+      {
+        $match: {
+          referralCount: { $gt: 0 }
+        }
+      },
+      {
+        $sort: { referralCount: -1 }
+      },
+      {
+        $limit: 10
+      },
+      {
+        $project: {
+          _id: 1,
+          name: 1,
+          userName: 1,
+          profileImage: 1,
+          referralCount: 1
+        }
+      }
+    ]).toArray();
+
+    // Get recent referrals (last 10)
+    const recentReferrals = await usersCollections
+      .find({
+        referrerId: { $exists: true, $ne: null }
+      })
+      .project({
+        _id: 1,
+        name: 1,
+        userName: 1,
+        profileImage: 1,
+        referrerId: 1,
+        referrerName: 1,
+        createdAt: 1
+      })
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .toArray();
+
+    // Enrich recent referrals with referrer details
+    const enrichedRecentReferrals = await Promise.all(
+      recentReferrals.map(async (referral) => {
+        const referrerDetails = await usersCollections.findOne(
+          { _id: referral.referrerId },
+          { projection: { name: 1, userName: 1, profileImage: 1 } }
+        );
+        return {
+          ...referral,
+          referrerDetails
+        };
+      })
+    );
+
+    res.json({
+      success: true,
+      data: usersWithReferralData,
+      pagination: {
+        currentPage: parseInt(page),
+        totalPages: Math.ceil(totalUsers / limit),
+        totalUsers,
+        limit: parseInt(limit)
+      },
+      statistics: {
+        totalUsers,
+        usersWithReferrer,
+        referralPercentage: totalUsers > 0 ? ((usersWithReferrer / totalUsers) * 100).toFixed(2) : 0,
+        topReferrers,
+        recentReferrals: enrichedRecentReferrals
+      }
+    });
+  } catch (error) {
+    console.error("Error fetching admin referral history:", error);
+    res.status(500).json({ 
+      error: "Internal server error",
+      message: "Failed to fetch referral history."
     });
   }
 });
@@ -7481,28 +7685,23 @@ app.delete("/cart/remove/:productId", async (req, res) => {
 });
 
 app.post("/orders/create", async (req, res) => {
-  try {
-    const {
-      userId,
-      items,
-      shippingInfo,
-      totalAmount,
-      subtotal,
-      deliveryCharges,
-      totalProducts,
-      deliveryChargePerProduct,
-      paymentStatus,
-      orderSource,
-    } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+  
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
 
-    if (!items || items.length === 0) {
-      return res
-        .status(400)
-        .json({ success: false, message: "No items in order" });
+  try {
+    await connectToMongo();
+    
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
     }
 
-    const newOrder = {
-      userId,
+    const {
       items,
       shippingInfo,
       totalAmount,
@@ -7510,44 +7709,170 @@ app.post("/orders/create", async (req, res) => {
       deliveryCharges,
       totalProducts,
       deliveryChargePerProduct,
-      paymentStatus,
-      orderStatus: "pending",
+      paymentMethod,
       orderSource,
-      createdAt: new Date(),
+      coinsUsed = 0,  // NEW: Coins to use for payment (default 0)
+    } = req.body;
+
+    // Validation
+    if (!items || items.length === 0) {
+      return res.status(400).json({ success: false, message: "No items in order" });
+    }
+
+    // Calculate coin payment
+    const coinsInTaka = coinsUsed / COIN_TO_TAKA_RATE;
+    const remainingAmount = totalAmount - coinsInTaka;
+
+    // Validate coin usage
+    if (coinsUsed < 0) {
+      return res.status(400).json({ error: "Invalid coin amount" });
+    }
+
+    if (coinsUsed % 100 !== 0) {
+      return res.status(400).json({ error: "Coins must be in multiples of 100" });
+    }
+
+    if (coinsInTaka > totalAmount) {
+      return res.status(400).json({ error: "Coins amount exceeds order total" });
+    }
+
+    if (user.flyWallet < coinsUsed) {
+      return res.status(400).json({ 
+        error: "Insufficient FlyWallet balance",
+        required: coinsUsed,
+        available: user.flyWallet || 0
+      });
+    }
+
+    // Determine payment breakdown
+    const isFullyCoinPaid = remainingAmount === 0;
+    const paymentBreakdown = {
+      coinPayment: coinsInTaka,
+      cashPayment: remainingAmount,
+      paymentMethod: isFullyCoinPaid ? "FullCoins" : (coinsUsed > 0 ? "Hybrid" : "CashOnly")
     };
 
-    // 1️⃣ Order create
-    const result = await ordersCollection.insertOne(newOrder);
+    console.log(`💰 Order creation: Total ৳${totalAmount}, Coins: ${coinsUsed} (৳${coinsInTaka}), Remaining: ৳${remainingAmount}`);
 
-    // 2️⃣ Cart before clear
-    const cartBefore = await cartsCollection.findOne({ userId });
+    // Start MongoDB transaction for atomicity
+    const session = client.startSession();
+    
+    try {
+      await session.withTransaction(async () => {
+        // 1️⃣ Deduct coins if used
+        if (coinsUsed > 0) {
+          const updateResult = await usersCollections.updateOne(
+            { 
+              _id: user._id,
+              flyWallet: { $gte: coinsUsed }  // Ensure sufficient balance (optimistic locking)
+            },
+            { 
+              $inc: { flyWallet: -coinsUsed },
+              $push: {
+                walletTransactions: {
+                  type: "debit",
+                  amount: coinsUsed,
+                  amountInTaka: coinsInTaka,
+                  reason: "Marketplace purchase",
+                  date: new Date()
+                }
+              }
+            },
+            { session }
+          );
+          
+          if (updateResult.matchedCount === 0) {
+            throw new Error("Insufficient coins or concurrent modification detected");
+          }
+          
+          console.log(`✅ Deducted ${coinsUsed} coins from user ${user.number}`);
+        }
 
-    const cartBeforeObjId = await cartsCollection.findOne({
-      userId: new ObjectId(userId),
-    });
+        // 2️⃣ Create order with payment breakdown
+        const newOrder = {
+          userId: user._id,
+          items,
+          shippingInfo,
+          totalAmount,
+          subtotal,
+          deliveryCharges,
+          totalProducts,
+          deliveryChargePerProduct,
+          
+          // Payment information
+          paymentMethod: isFullyCoinPaid ? "FlyWallet" : paymentMethod,
+          paymentStatus: isFullyCoinPaid ? "paid" : "pending",
+          
+          // Coin payment details
+          coinsUsed,
+          coinsInTaka,
+          remainingAmount,
+          paymentBreakdown,
+          
+          orderStatus: "pending",
+          orderSource,
+          createdAt: new Date(),
+        };
 
-    // 3️⃣ Try clear cart (handle both string & ObjectId cases)
-    const clearResult = await cartsCollection.updateOne(
-      {
-        $or: [
-          { userId: userId }, // যদি string হিসেবে save থাকে
-          { userId: new ObjectId(userId) }, // যদি ObjectId হিসেবে save থাকে
-        ],
-      },
-      { $set: { items: [] } }
-    );
+        const orderResult = await ordersCollection.insertOne(newOrder, { session });
+        console.log(`✅ Order created: ${orderResult.insertedId}`);
 
-    // 4️⃣ Cart after clear
-    const cartAfter = await cartsCollection.findOne({ userId });
+        // 3️⃣ Update product stock
+        for (const item of items) {
+          await productsCollection.updateOne(
+            { _id: new ObjectId(item.productId) },
+            { $inc: { stock: -item.quantity } },
+            { session }
+          );
+        }
 
-    res.status(201).json({
-      success: true,
-      message: "Order created successfully",
-      orderId: result.insertedId,
-    });
+        // 4️⃣ Clear cart (handle both string & ObjectId cases)
+        await cartsCollection.updateOne(
+          {
+            $or: [
+              { userId: user._id.toString() },
+              { userId: user._id },
+            ],
+          },
+          { $set: { items: [] } },
+          { session }
+        );
+
+        // 5️⃣ Emit socket event for wallet update
+        if (io && coinsUsed > 0) {
+          io.to(user._id.toString()).emit("walletUpdated", {
+            flyWallet: (user.flyWallet || 0) - coinsUsed,
+            wallet: user.wallet || 0,
+            transaction: {
+              type: "purchase",
+              amount: coinsUsed,
+              orderId: orderResult.insertedId
+            }
+          });
+        }
+
+        // Return success response
+        res.status(201).json({
+          success: true,
+          message: "Order created successfully",
+          orderId: orderResult.insertedId,
+          paymentBreakdown,
+          coinsDeducted: coinsUsed
+        });
+      });
+    } catch (transactionError) {
+      console.error("❌ Transaction error:", transactionError);
+      throw transactionError;
+    } finally {
+      await session.endSession();
+    }
+
   } catch (error) {
     console.error("❌ Error in /orders/create:", error);
-    res.status(500).json({ success: false, message: "Internal server error" });
+    res.status(500).json({ 
+      success: false, 
+      message: error.message || "Internal server error" 
+    });
   }
 });
 
@@ -10109,6 +10434,262 @@ app.get("/admin/communities/stats", verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error("GET /admin/communities/stats error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// =====================
+// Location Management API for Wallate Shop
+// =====================
+
+// Add new location (admin only)
+app.post("/api/locations", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    const { division, district, thana, union, area, coordinates, googleMapsUrl } = req.body;
+
+    // Validation
+    if (!division || !district || !thana) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Division, district, and thana are required" 
+      });
+    }
+
+    if (!coordinates || !coordinates.lat || !coordinates.lng) {
+      return res.status(400).json({ 
+        success: false, 
+        message: "Valid coordinates (lat, lng) are required" 
+      });
+    }
+
+    // Check for duplicate location
+    const existingLocation = await locationsCollection.findOne({
+      division: division.trim(),
+      district: district.trim(),
+      thana: thana.trim(),
+      union: union?.trim() || "",
+      area: area?.trim() || ""
+    });
+
+    if (existingLocation) {
+      return res.status(409).json({ 
+        success: false, 
+        message: "This location already exists" 
+      });
+    }
+
+    const newLocation = {
+      division: division.trim(),
+      district: district.trim(),
+      thana: thana.trim(),
+      union: union?.trim() || "",
+      area: area?.trim() || "",
+      coordinates: {
+        lat: parseFloat(coordinates.lat),
+        lng: parseFloat(coordinates.lng)
+      },
+      googleMapsUrl: googleMapsUrl || "",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await locationsCollection.insertOne(newLocation);
+    
+    return res.status(201).json({ 
+      success: true, 
+      message: "Location added successfully",
+      data: { ...newLocation, _id: result.insertedId }
+    });
+  } catch (error) {
+    console.error("POST /api/locations error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get all active locations
+app.get("/api/locations", async (req, res) => {
+  try {
+    const locations = await locationsCollection
+      .find({ status: "active" })
+      .sort({ division: 1, district: 1, thana: 1 })
+      .toArray();
+
+    return res.json({ success: true, data: locations });
+  } catch (error) {
+    console.error("GET /api/locations error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get locations in hierarchical format for cascading dropdowns
+app.get("/api/locations/hierarchy", async (req, res) => {
+  try {
+    const locations = await locationsCollection
+      .find({ status: "active" })
+      .sort({ division: 1, district: 1, thana: 1 })
+      .toArray();
+
+    // Build hierarchical structure
+    const hierarchy = {};
+
+    locations.forEach(location => {
+      const divKey = location.division.toLowerCase().replace(/\s+/g, '');
+      
+      if (!hierarchy[divKey]) {
+        hierarchy[divKey] = {
+          name: location.division,
+          coordinates: location.coordinates,
+          districts: {}
+        };
+      }
+
+      const distKey = location.district.toLowerCase().replace(/\s+/g, '');
+      
+      if (!hierarchy[divKey].districts[distKey]) {
+        hierarchy[divKey].districts[distKey] = {
+          name: location.district,
+          coordinates: location.coordinates,
+          thanas: []
+        };
+      }
+
+      // Add thana with union if exists
+      const thanaData = {
+        name: location.thana,
+        lat: location.coordinates.lat,
+        lng: location.coordinates.lng
+      };
+
+      if (location.union) {
+        thanaData.union = location.union;
+      }
+
+      if (location.area) {
+        thanaData.area = location.area;
+      }
+
+      hierarchy[divKey].districts[distKey].thanas.push(thanaData);
+    });
+
+    return res.json({ success: true, data: { divisions: hierarchy } });
+  } catch (error) {
+    console.error("GET /api/locations/hierarchy error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get specific location by ID
+app.get("/api/locations/:id", async (req, res) => {
+  try {
+    let locationId;
+    try {
+      locationId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid location ID" });
+    }
+
+    const location = await locationsCollection.findOne({ _id: locationId });
+
+    if (!location) {
+      return res.status(404).json({ success: false, message: "Location not found" });
+    }
+
+    return res.json({ success: true, data: location });
+  } catch (error) {
+    console.error("GET /api/locations/:id error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Update location (admin only)
+app.put("/api/locations/:id", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    let locationId;
+    try {
+      locationId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid location ID" });
+    }
+
+    const { division, district, thana, union, area, coordinates, googleMapsUrl, status } = req.body;
+
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    if (division) updateData.division = division.trim();
+    if (district) updateData.district = district.trim();
+    if (thana) updateData.thana = thana.trim();
+    if (union !== undefined) updateData.union = union.trim();
+    if (area !== undefined) updateData.area = area.trim();
+    if (coordinates && coordinates.lat && coordinates.lng) {
+      updateData.coordinates = {
+        lat: parseFloat(coordinates.lat),
+        lng: parseFloat(coordinates.lng)
+      };
+    }
+    if (googleMapsUrl !== undefined) updateData.googleMapsUrl = googleMapsUrl;
+    if (status && ["active", "inactive"].includes(status)) {
+      updateData.status = status;
+    }
+
+    const result = await locationsCollection.updateOne(
+      { _id: locationId },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Location not found" });
+    }
+
+    const updatedLocation = await locationsCollection.findOne({ _id: locationId });
+
+    return res.json({ 
+      success: true, 
+      message: "Location updated successfully",
+      data: updatedLocation
+    });
+  } catch (error) {
+    console.error("PUT /api/locations/:id error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Delete location (admin only)
+app.delete("/api/locations/:id", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    let locationId;
+    try {
+      locationId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid location ID" });
+    }
+
+    const result = await locationsCollection.deleteOne({ _id: locationId });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: "Location not found" });
+    }
+
+    return res.json({ 
+      success: true, 
+      message: "Location deleted successfully"
+    });
+  } catch (error) {
+    console.error("DELETE /api/locations/:id error:", error);
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
