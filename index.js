@@ -73,8 +73,17 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
 // Performance: Cache headers for static-like responses
 app.use((req, res, next) => {
-  // Cache GET requests for 5 minutes (except auth endpoints)
-  if (req.method === 'GET' && !req.path.includes('/api/notifications') && !req.path.includes('/api/messages')) {
+  // Cache GET requests for 5 minutes (except auth and dynamic endpoints)
+  const pathsToExclude = [
+    '/api/notifications',
+    '/api/messages',
+    '/opinion/posts',
+    '/notes'
+  ];
+  
+  const shouldExclude = pathsToExclude.some(path => req.path.includes(path));
+  
+  if (req.method === 'GET' && !shouldExclude) {
     res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
   }
   next();
@@ -4968,6 +4977,94 @@ app.delete("/post/delete/:postId", async (req, res) => {
     res
       .status(500)
       .json({ error: "An error occurred while deleting the book." });
+  }
+});
+
+app.delete("/opinion/delete/:postId", async (req, res) => {
+  const { postId } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Find the post to check ownership
+    const post = await opinionCollections.findOne({ _id: new ObjectId(postId) });
+    if (!post) {
+      return res.status(404).json({ error: "Post not found." });
+    }
+
+    // Check if the current user is the author
+    if (post.userId?.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({ error: "You can only delete your own posts." });
+    }
+
+    const result = await opinionCollections.deleteOne({
+      _id: new ObjectId(postId),
+    });
+
+    res.send({
+      success: true,
+      message: "Post deleted successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error deleting opinion post:", error);
+    res.status(500).json({ error: "An error occurred while deleting the post." });
+  }
+});
+
+app.put("/opinion/edit/:postId", async (req, res) => {
+  const { postId } = req.params;
+  const { description } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const post = await opinionCollections.findOne({ _id: new ObjectId(postId) });
+    if (!post) {
+      return res.status(404).json({ error: "Post not found." });
+    }
+
+    if (post.userId?.toString() !== currentUser._id.toString()) {
+      return res.status(403).json({ error: "You can only edit your own posts." });
+    }
+
+    const result = await opinionCollections.updateOne(
+      { _id: new ObjectId(postId) },
+      { $set: { description: description } }
+    );
+
+    res.send({
+      success: true,
+      message: "Post updated successfully",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error editing opinion post:", error);
+    res.status(500).json({ error: "An error occurred while updating the post." });
   }
 });
 
