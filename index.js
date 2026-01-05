@@ -78,7 +78,9 @@ app.use((req, res, next) => {
     '/api/notifications',
     '/api/messages',
     '/opinion/posts',
-    '/notes'
+    '/notes',
+    '/api/shops',
+    '/api/locations'
   ];
   
   const shouldExclude = pathsToExclude.some(path => req.path.includes(path));
@@ -889,6 +891,7 @@ const bookCollections = db.collection("bookCollections");
 
 const onindoBookCollections = db.collection("onindoBookCollections");
 const bookTransCollections = db.collection("bookTransCollections");
+const coinTransferCollections = db.collection("coinTransferCollections");
 const messagesCollections = db.collection("messagesCollections");
 const pdfCollections = db.collection("pdfCollections");
 const notifyCollections = db.collection("notifyCollections");
@@ -953,6 +956,7 @@ const projectsCollection = db.collection("projectsCollection");
 const proposalsCollection = db.collection("proposalsCollection");
 // Locations collection for wallate shop
 const locationsCollection = db.collection("locationsCollection");
+const shopsCollection = db.collection("shopsCollection");
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -2620,6 +2624,28 @@ app.get("/profile", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
 
+    // Auto-generate username if missing
+    if (!user.userName) {
+      const baseName = (user.name || "user").toLowerCase().replace(/\s+/g, "");
+      let username = baseName;
+      let counter = 1;
+
+      while (await usersCollections.findOne({ userName: username })) {
+        username = `${baseName}${Math.floor(Math.random() * 1000)}`;
+        counter++;
+        if (counter > 20) {
+          username = `${baseName}${Date.now()}`;
+          break;
+        }
+      }
+
+      await usersCollections.updateOne(
+        { _id: user._id },
+        { $set: { userName: username } }
+      );
+      user.userName = username; // Update local object for response
+    }
+
     res.json({
       id: user._id,
       name: user.name || '',
@@ -2836,6 +2862,94 @@ app.put("/profile/updateDetails", async (req, res) => {
   } catch (error) {
     console.error("Error updating profile details:", error);
     res.status(500).json({ error: "Failed to update profile details." });
+  }
+});
+// Coin Transfer Endpoint
+app.post("/api/transfer-coins", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Access denied" });
+
+  try {
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    const decoded = jwt.verify(token, jwtSecret);
+    
+    if (!decoded.number) {
+      return res.status(400).json({ error: "Invalid token payload" });
+    }
+
+    const { receiverUsername, amount } = req.body;
+    const transferAmount = parseFloat(amount);
+
+    if (!receiverUsername || isNaN(transferAmount) || transferAmount <= 0) {
+      return res.status(400).json({ error: "Invalid transfer details" });
+    }
+
+    await connectToMongo();
+
+    // Find sender and receiver
+    const sender = await usersCollections.findOne({ number: decoded.number });
+    const receiver = await usersCollections.findOne({ userName: receiverUsername });
+
+    if (!sender) return res.status(404).json({ error: "Sender not found" });
+    if (!receiver) return res.status(404).json({ error: "Receiver not found" });
+    
+    if (sender.userName === receiverUsername) {
+      return res.status(400).json({ error: "Cannot transfer to yourself" });
+    }
+
+    if (sender.wallet < transferAmount) {
+      return res.status(400).json({ error: "Insufficient balance" });
+    }
+
+    // Perform balance updates
+    // Deduct from sender
+    const deductResult = await usersCollections.updateOne(
+      { _id: sender._id, wallet: { $gte: transferAmount } },
+      { $inc: { wallet: -transferAmount } }
+    );
+
+    if (deductResult.modifiedCount === 0) {
+      return res.status(400).json({ error: "Transfer failed: Insufficient balance or concurrency issue" });
+    }
+
+    // Add to receiver
+    await usersCollections.updateOne(
+      { _id: receiver._id },
+      { $inc: { wallet: transferAmount } }
+    );
+
+    // Log transaction
+    const transactionRecord = {
+      senderId: sender._id,
+      senderName: sender.name,
+      senderUsername: sender.userName,
+      receiverId: receiver._id,
+      receiverName: receiver.name,
+      receiverUsername: receiver.userName,
+      amount: transferAmount,
+      date: new Date().toLocaleDateString('en-GB'),
+      time: new Date().toLocaleTimeString('en-US', { hour12: true }),
+      timestamp: new Date()
+    };
+
+    await coinTransferCollections.insertOne(transactionRecord);
+
+    // Emit socket updates for real-time balance refresh
+    const io = req.app.get('io') || global.io;
+    if (io) {
+      io.emit("walletUpdated", { userId: sender._id });
+      io.emit("walletUpdated", { userId: receiver._id });
+    }
+
+    res.json({ 
+      success: true, 
+      message: "Transfer successful", 
+      newBalance: (sender.wallet || 0) - transferAmount 
+    });
+
+  } catch (error) {
+    console.error("Transfer error:", error);
+    res.status(500).json({ error: "Transfer failed. Please try again." });
   }
 });
 
@@ -10069,6 +10183,8 @@ const io = new Server(server, {
   allowEIO3: true, // Enable compatibility with older clients
 });
 
+app.set('io', io);
+
 io.on("connection", (socket) => {
   // ইউজারকে রুমে যোগ করা
   socket.on("joinRoom", (userId) => {
@@ -10547,7 +10663,7 @@ app.post("/api/locations", verifyToken, async (req, res) => {
     }
 
     const { division, district, thana, union, area, coordinates, googleMapsUrl } = req.body;
-
+    console.log(division, district, thana, union, area, coordinates, googleMapsUrl);
     // Validation
     if (!division || !district || !thana) {
       return res.status(400).json({ 
@@ -10744,7 +10860,10 @@ app.put("/api/locations/:id", verifyToken, async (req, res) => {
       { $set: updateData }
     );
 
+    console.log("Update operation result:", result);
+
     if (result.matchedCount === 0) {
+      console.log("No location matched with ID:", req.params.id);
       return res.status(404).json({ success: false, message: "Location not found" });
     }
 
@@ -10775,9 +10894,12 @@ app.delete("/api/locations/:id", verifyToken, async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid location ID" });
     }
 
+    console.log("Attempting to delete location with ID:", req.params.id);
     const result = await locationsCollection.deleteOne({ _id: locationId });
+    console.log("Delete result:", result);
 
     if (result.deletedCount === 0) {
+      console.log("No document found with ID:", req.params.id);
       return res.status(404).json({ success: false, message: "Location not found" });
     }
 
@@ -10787,6 +10909,176 @@ app.delete("/api/locations/:id", verifyToken, async (req, res) => {
     });
   } catch (error) {
     console.error("DELETE /api/locations/:id error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+
+// WALLET SHOP ENDPOINTS
+
+// Add new shop (admin only)
+app.post("/api/shops", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    const { 
+      shopName, 
+      shopImage, 
+      shopCategory, 
+      shopLocationId, 
+      paymentPercentage, 
+      mapLocation, 
+      shopOwnerName, 
+      contactNumber 
+    } = req.body;
+
+    if (!shopName || !shopImage || !shopLocationId || !mapLocation) {
+      return res.status(400).json({ success: false, message: "Required fields missing" });
+    }
+
+    const shopData = {
+      shopName,
+      shopImage,
+      shopCategory,
+      shopLocationId: new ObjectId(shopLocationId),
+      paymentPercentage: parseFloat(paymentPercentage) || 0,
+      mapLocation: {
+        lat: parseFloat(mapLocation.lat),
+        lng: parseFloat(mapLocation.lng)
+      },
+      shopOwnerName,
+      contactNumber,
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+
+    const result = await shopsCollection.insertOne(shopData);
+    
+    return res.status(201).json({ 
+      success: true, 
+      message: "Shop added successfully",
+      data: { ...shopData, _id: result.insertedId }
+    });
+  } catch (error) {
+    console.error("POST /api/shops error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get all shops
+app.get("/api/shops", async (req, res) => {
+  try {
+    const shops = await shopsCollection.aggregate([
+      {
+        $lookup: {
+          from: "locationsCollection",
+          localField: "shopLocationId",
+          foreignField: "_id",
+          as: "locationDetails"
+        }
+      },
+      {
+        $unwind: {
+          path: "$locationDetails",
+          preserveNullAndEmptyArrays: true
+        }
+      }
+    ]).toArray();
+
+    return res.json({ success: true, data: shops });
+  } catch (error) {
+    console.error("GET /api/shops error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Update shop (admin only)
+app.put("/api/shops/:id", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    let shopId;
+    try {
+      shopId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid shop ID" });
+    }
+
+    const { 
+      shopName, 
+      shopImage, 
+      shopCategory, 
+      shopLocationId, 
+      paymentPercentage, 
+      mapLocation, 
+      shopOwnerName, 
+      contactNumber,
+      status
+    } = req.body;
+
+    const updateData = {
+      updatedAt: new Date()
+    };
+
+    if (shopName) updateData.shopName = shopName;
+    if (shopImage) updateData.shopImage = shopImage;
+    if (shopCategory) updateData.shopCategory = shopCategory;
+    if (shopLocationId) updateData.shopLocationId = new ObjectId(shopLocationId);
+    if (paymentPercentage !== undefined) updateData.paymentPercentage = parseFloat(paymentPercentage);
+    if (mapLocation && mapLocation.lat && mapLocation.lng) {
+      updateData.mapLocation = {
+        lat: parseFloat(mapLocation.lat),
+        lng: parseFloat(mapLocation.lng)
+      };
+    }
+    if (shopOwnerName) updateData.shopOwnerName = shopOwnerName;
+    if (contactNumber) updateData.contactNumber = contactNumber;
+    if (status) updateData.status = status;
+
+    const result = await shopsCollection.updateOne(
+      { _id: shopId },
+      { $set: updateData }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Shop not found" });
+    }
+
+    return res.json({ success: true, message: "Shop updated successfully" });
+  } catch (error) {
+    console.error("PUT /api/shops/:id error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Delete shop (admin only)
+app.delete("/api/shops/:id", verifyToken, async (req, res) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Admin access required" });
+    }
+
+    let shopId;
+    try {
+      shopId = new ObjectId(req.params.id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid shop ID" });
+    }
+
+    const result = await shopsCollection.deleteOne({ _id: shopId });
+
+    if (result.deletedCount === 0) {
+      return res.status(404).json({ success: false, message: "Shop not found" });
+    }
+
+    return res.json({ success: true, message: "Shop deleted successfully" });
+  } catch (error) {
+    console.error("DELETE /api/shops/:id error:", error);
     return res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
