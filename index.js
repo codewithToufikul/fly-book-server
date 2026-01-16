@@ -71,25 +71,7 @@ app.options('*', cors(corsOptions));
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
-// Performance: Cache headers for static-like responses
-app.use((req, res, next) => {
-  // Cache GET requests for 5 minutes (except auth and dynamic endpoints)
-  const pathsToExclude = [
-    '/api/notifications',
-    '/api/messages',
-    '/opinion/posts',
-    '/notes',
-    '/api/shops',
-    '/api/locations'
-  ];
-  
-  const shouldExclude = pathsToExclude.some(path => req.path.includes(path));
-  
-  if (req.method === 'GET' && !shouldExclude) {
-    res.set('Cache-Control', 'public, max-age=300'); // 5 minutes
-  }
-  next();
-});
+
 
 // MongoDB connection URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ivo4yuq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -7992,21 +7974,47 @@ app.post("/orders/create", async (req, res) => {
       return res.status(400).json({ success: false, message: "No items in order" });
     }
 
-    // Calculate coin payment
+    // Recalculate and validate maximum coins allowed based on each product's stored percentage
+    let maxCoinsAllowed = 0;
+    try {
+      const productIds = items.map(item => item._id || item.productId);
+      const dbProducts = await productsCollection.find({ _id: { $in: productIds.map(id => new ObjectId(id)) } }).toArray();
+      
+      const productMap = dbProducts.reduce((acc, p) => {
+        acc[p._id.toString()] = p;
+        return acc;
+      }, {});
+
+      items.forEach(item => {
+        const dbProduct = productMap[item._id || item.productId];
+        const percentage = dbProduct?.coinUsagePercentage || 30; // default to 30% if not set
+        const itemMaxTaka = (item.price * item.quantity) * (percentage / 100);
+        maxCoinsAllowed += (itemMaxTaka * COIN_TO_TAKA_RATE);
+      });
+    } catch (e) {
+      console.error("Error calculating coin limit:", e);
+      // If DB check fails, fallback to a safe 30% for all items
+      maxCoinsAllowed = items.reduce((acc, item) => acc + ((item.price * item.quantity * 0.3) * COIN_TO_TAKA_RATE), 0);
+    }
+
+    if (coinsUsed > Math.floor(maxCoinsAllowed) + 1) { // +1 for small rounding issues
+      return res.status(400).json({ 
+        error: "Coins amount exceeds the allowed percentage for these products",
+        limit: Math.floor(maxCoinsAllowed)
+      });
+    }
+
+    // Now calculate coin payment for the response/breakdown
     const coinsInTaka = coinsUsed / COIN_TO_TAKA_RATE;
     const remainingAmount = totalAmount - coinsInTaka;
 
-    // Validate coin usage
+    // Validate coin usage (basic checks)
     if (coinsUsed < 0) {
       return res.status(400).json({ error: "Invalid coin amount" });
     }
 
     if (coinsUsed % 100 !== 0) {
       return res.status(400).json({ error: "Coins must be in multiples of 100" });
-    }
-
-    if (coinsInTaka > totalAmount) {
-      return res.status(400).json({ error: "Coins amount exceeds order total" });
     }
 
     if (user.flyWallet < coinsUsed) {
