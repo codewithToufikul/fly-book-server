@@ -21,8 +21,8 @@ const dns = require("dns");
 
 // Prefer IPv4 first to avoid DNS resolution issues in some environments
 try {
-  if (typeof dns.setDefaultResultOrder === 'function') {
-    dns.setDefaultResultOrder('ipv4first');
+  if (typeof dns.setDefaultResultOrder === "function") {
+    dns.setDefaultResultOrder("ipv4first");
   }
 } catch (_) {}
 
@@ -30,25 +30,31 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Performance: Compression middleware (gzip/brotli)
-app.use(compression({
-  level: 6, // Compression level (1-9, 6 is good balance)
-  filter: (req, res) => {
-    // Don't compress if client doesn't support it
-    if (req.headers['x-no-compression']) {
-      return false;
-    }
-    // Use compression for all other requests
-    return compression.filter(req, res);
-  }
-}));
+app.use(
+  compression({
+    level: 6, // Compression level (1-9, 6 is good balance)
+    filter: (req, res) => {
+      // Don't compress if client doesn't support it
+      if (req.headers["x-no-compression"]) {
+        return false;
+      }
+      // Use compression for all other requests
+      return compression.filter(req, res);
+    },
+  }),
+);
 
 // CORS Configuration - Must be before all routes
 const corsOptions = {
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
-    
-    const allowedOrigins = ["https://flybook.com.bd", "https://flybook-f23c5.web.app", "http://localhost:5173"];
+
+    const allowedOrigins = [
+      "https://flybook.com.bd",
+      "https://flybook-f23c5.web.app",
+      "http://localhost:5173",
+    ];
     if (allowedOrigins.indexOf(origin) !== -1) {
       callback(null, true);
     } else {
@@ -59,19 +65,17 @@ const corsOptions = {
   allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
   credentials: true,
   preflightContinue: false,
-  optionsSuccessStatus: 204
+  optionsSuccessStatus: 204,
 };
 
 // Apply CORS middleware
 app.use(cors(corsOptions));
 
 // Handle preflight OPTIONS requests explicitly
-app.options('*', cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
-
-
 
 // MongoDB connection URI
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.ivo4yuq.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0`;
@@ -118,23 +122,25 @@ async function connectToMongo() {
       connectionRetries = 0;
     }
   }
-  
+
   // If connection is in progress, wait for it
   if (connectionPromise) {
     return connectionPromise;
   }
-  
+
   // Start new connection with retry logic
   connectionPromise = (async () => {
     let lastError = null;
-    
+
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
         // Check if credentials are available
         if (!process.env.DB_USER || !process.env.DB_PASS) {
-          throw new Error("MongoDB credentials (DB_USER or DB_PASS) are missing in environment variables");
+          throw new Error(
+            "MongoDB credentials (DB_USER or DB_PASS) are missing in environment variables",
+          );
         }
-        
+
         // Close existing connection if it exists but is not working
         if (client.topology && client.topology.isConnected()) {
           try {
@@ -153,78 +159,99 @@ async function connectToMongo() {
             }
           }
         }
-        
+
         // Attempt to connect
         if (!client.topology || !client.topology.isConnected()) {
-          console.log(`Attempting MongoDB connection (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`);
+          console.log(
+            `Attempting MongoDB connection (attempt ${attempt + 1}/${MAX_RETRIES + 1})...`,
+          );
           await client.connect();
         }
-        
+
         // Verify connection with timeout (increased for VPS)
         const pingPromise = client.db("admin").command({ ping: 1 });
-        const timeoutPromise = new Promise((_, reject) => 
-          setTimeout(() => reject(new Error("Connection ping timeout")), 30000)
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Connection ping timeout")), 30000),
         );
-        
+
         await Promise.race([pingPromise, timeoutPromise]);
-        
+
         // Connection successful
         isConnected = true;
         connectionPromise = null;
         connectionRetries = 0;
         console.log("✅ MongoDB connected successfully.");
         return;
-        
       } catch (error) {
         lastError = error;
         connectionRetries = attempt + 1;
-        
+
         // Log detailed error information
         console.error(`❌ MongoDB connection attempt ${attempt + 1} failed:`, {
           message: error.message,
           name: error.name,
           code: error.code,
-          codeName: error.codeName
+          codeName: error.codeName,
         });
-        
+
         // If this is not the last attempt, wait before retrying
         if (attempt < MAX_RETRIES) {
           const delay = RETRY_DELAY * Math.pow(2, attempt); // Exponential backoff
           console.log(`⏳ Retrying in ${delay}ms...`);
-          await new Promise(resolve => setTimeout(resolve, delay));
+          await new Promise((resolve) => setTimeout(resolve, delay));
         }
       }
     }
-    
+
     // All retries failed
     isConnected = false;
     connectionPromise = null;
     const errorMessage = lastError?.message || "Unknown connection error";
-    console.error(`❌ MongoDB connection failed after ${MAX_RETRIES + 1} attempts:`, errorMessage);
-    
+    console.error(
+      `❌ MongoDB connection failed after ${MAX_RETRIES + 1} attempts:`,
+      errorMessage,
+    );
+
     // Provide helpful error message with VPS-specific guidance
     let userMessage = `Database connection failed: ${errorMessage}`;
-    if (errorMessage.includes("authentication") || errorMessage.includes("credentials")) {
-      userMessage = "Database authentication failed. Please check DB_USER and DB_PASS environment variables.";
-    } else if (errorMessage.includes("timeout") || errorMessage.includes("Server selection timed out")) {
-      userMessage = "Database connection timeout. This usually means:\n" +
+    if (
+      errorMessage.includes("authentication") ||
+      errorMessage.includes("credentials")
+    ) {
+      userMessage =
+        "Database authentication failed. Please check DB_USER and DB_PASS environment variables.";
+    } else if (
+      errorMessage.includes("timeout") ||
+      errorMessage.includes("Server selection timed out")
+    ) {
+      userMessage =
+        "Database connection timeout. This usually means:\n" +
         "1. VPS IP address is not whitelisted in MongoDB Atlas Network Access\n" +
         "2. Network/firewall blocking MongoDB Atlas (port 27017)\n" +
         "3. DNS resolution issues\n" +
         "Please check MongoDB Atlas Network Access settings and whitelist your VPS IP address (0.0.0.0/0 for testing).";
     } else if (errorMessage.includes("ENOTFOUND")) {
-      userMessage = "DNS resolution failed. Cannot resolve MongoDB Atlas hostname. Check network connectivity.";
+      userMessage =
+        "DNS resolution failed. Cannot resolve MongoDB Atlas hostname. Check network connectivity.";
     }
-    
+
     console.error("🔍 Troubleshooting steps:");
-    console.error("   1. Check MongoDB Atlas Network Access - whitelist VPS IP or use 0.0.0.0/0 (for testing)");
-    console.error("   2. Verify DB_USER and DB_PASS environment variables are set correctly");
-    console.error("   3. Test network connectivity: ping cluster0.ivo4yuq.mongodb.net");
-    console.error("   4. Check VPS firewall rules allow outbound connections on port 27017");
-    
+    console.error(
+      "   1. Check MongoDB Atlas Network Access - whitelist VPS IP or use 0.0.0.0/0 (for testing)",
+    );
+    console.error(
+      "   2. Verify DB_USER and DB_PASS environment variables are set correctly",
+    );
+    console.error(
+      "   3. Test network connectivity: ping cluster0.ivo4yuq.mongodb.net",
+    );
+    console.error(
+      "   4. Check VPS firewall rules allow outbound connections on port 27017",
+    );
+
     throw new Error(userMessage);
   })();
-  
+
   return connectionPromise;
 }
 
@@ -247,7 +274,7 @@ const uploadBufferToCloudinary = (buffer, fileName) => {
       (error, result) => {
         if (error) reject(error);
         else resolve(result);
-      }
+      },
     );
     const bufferStream = new stream.PassThrough();
     bufferStream.end(buffer);
@@ -343,11 +370,11 @@ const getPdfPageCount = async (pdfUrl) => {
 
 // Simple health check endpoint (no database needed)
 app.get("/health", (req, res) => {
-  res.json({ 
-    status: "ok", 
+  res.json({
+    status: "ok",
     server: "running",
     timestamp: new Date().toISOString(),
-    database: isConnected ? "connected" : "disconnected"
+    database: isConnected ? "connected" : "disconnected",
   });
 });
 
@@ -355,26 +382,31 @@ app.get("/health", (req, res) => {
 // Skip database connection for routes that don't need it
 app.use(async (req, res, next) => {
   // Skip database connection for static files and health check routes
-  if (req.path === "/" || 
-      req.path === "/health" || 
-      req.path === "/diagnostics" ||
-      req.path === "/favicon.ico" ||
-      req.path.startsWith("/static/") ||
-      req.path.startsWith("/assets/")) {
+  if (
+    req.path === "/" ||
+    req.path === "/health" ||
+    req.path === "/diagnostics" ||
+    req.path === "/favicon.ico" ||
+    req.path.startsWith("/static/") ||
+    req.path.startsWith("/assets/")
+  ) {
     return next();
   }
-  
+
   // For critical endpoints with cache, skip middleware - let them handle their own fallback
   if (req.path === "/all-home-books" || req.path === "/home-category") {
     return next(); // These endpoints have their own fallback logic
   }
-  
+
   try {
     await connectToMongo();
     next();
   } catch (error) {
-    console.error(`MongoDB connection error for ${req.method} ${req.path}:`, error.message);
-    
+    console.error(
+      `MongoDB connection error for ${req.method} ${req.path}:`,
+      error.message,
+    );
+
     // For presentation: Return empty data instead of error for most endpoints
     // This prevents frontend crashes
     if (req.method === "GET") {
@@ -383,26 +415,26 @@ app.use(async (req, res, next) => {
         return res.json([]);
       }
       if (req.path.includes("/profile")) {
-        return res.status(503).json({ 
+        return res.status(503).json({
           error: "Service temporarily unavailable",
-          message: "Database connection failed. Please try again later."
+          message: "Database connection failed. Please try again later.",
         });
       }
     }
-    
+
     // Provide more detailed error response
     const errorResponse = {
       message: error.message || "Failed to connect to database",
       path: req.path,
       method: req.method,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     };
-    
+
     // Don't expose internal error details in production
     if (process.env.NODE_ENV === "development") {
       errorResponse.stack = error.stack;
     }
-    
+
     res.status(500).json(errorResponse);
   }
 });
@@ -411,18 +443,30 @@ app.use(async (req, res, next) => {
 app.put("/posts/:postId", verifyTokenEarly, async (req, res) => {
   try {
     let postObjId;
-    try { postObjId = new ObjectId(req.params.postId); } catch {
-      return res.status(400).json({ success: false, message: "Invalid post id" });
+    try {
+      postObjId = new ObjectId(req.params.postId);
+    } catch {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid post id" });
     }
 
     const post = await communityPostsCollection.findOne({ _id: postObjId });
-    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+    if (!post)
+      return res
+        .status(404)
+        .json({ success: false, message: "Post not found" });
 
     // Permission: author or community admins/editors
-    const role = await getCommunityRole(req.user._id, post.communityId.toString());
+    const role = await getCommunityRole(
+      req.user._id,
+      post.communityId.toString(),
+    );
     const isAuthor = post.authorId?.toString() === req.user._id?.toString();
     if (!(isAuthor || role.isMainAdmin || role.isAdmin || role.isEditor)) {
-      return res.status(403).json({ success: false, message: "Insufficient permissions" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Insufficient permissions" });
     }
 
     const allowed = ["title", "description", "visibility", "accessCode"]; // common fields
@@ -433,7 +477,9 @@ app.put("/posts/:postId", verifyTokenEarly, async (req, res) => {
       if (k in req.body) $set[k] = req.body[k];
     }
     if (!Object.keys($set).length) {
-      return res.status(400).json({ success: false, message: "No updatable fields provided" });
+      return res
+        .status(400)
+        .json({ success: false, message: "No updatable fields provided" });
     }
 
     await communityPostsCollection.updateOne({ _id: postObjId }, { $set });
@@ -441,7 +487,9 @@ app.put("/posts/:postId", verifyTokenEarly, async (req, res) => {
     return res.json({ success: true, data: updated });
   } catch (error) {
     console.error("PUT /posts/:postId error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -449,17 +497,29 @@ app.put("/posts/:postId", verifyTokenEarly, async (req, res) => {
 app.delete("/posts/:postId", verifyTokenEarly, async (req, res) => {
   try {
     let postObjId;
-    try { postObjId = new ObjectId(req.params.postId); } catch {
-      return res.status(400).json({ success: false, message: "Invalid post id" });
+    try {
+      postObjId = new ObjectId(req.params.postId);
+    } catch {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid post id" });
     }
 
     const post = await communityPostsCollection.findOne({ _id: postObjId });
-    if (!post) return res.status(404).json({ success: false, message: "Post not found" });
+    if (!post)
+      return res
+        .status(404)
+        .json({ success: false, message: "Post not found" });
 
-    const role = await getCommunityRole(req.user._id, post.communityId.toString());
+    const role = await getCommunityRole(
+      req.user._id,
+      post.communityId.toString(),
+    );
     const isAuthor = post.authorId?.toString() === req.user._id?.toString();
     if (!(isAuthor || role.isMainAdmin || role.isAdmin || role.isEditor)) {
-      return res.status(403).json({ success: false, message: "Insufficient permissions" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Insufficient permissions" });
     }
 
     // Cascade: delete likes
@@ -467,7 +527,9 @@ app.delete("/posts/:postId", verifyTokenEarly, async (req, res) => {
 
     // If course post, cleanup related collections
     if (post.type === "course") {
-      const course = await communityCoursesCollection.findOne({ postId: postObjId });
+      const course = await communityCoursesCollection.findOne({
+        postId: postObjId,
+      });
       if (course) {
         const courseId = course._id;
         await Promise.all([
@@ -487,7 +549,9 @@ app.delete("/posts/:postId", verifyTokenEarly, async (req, res) => {
     return res.json({ success: true });
   } catch (error) {
     console.error("DELETE /posts/:postId error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -495,7 +559,9 @@ app.delete("/posts/:postId", verifyTokenEarly, async (req, res) => {
 app.post("/upload/audio", audioUpload.single("audio"), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ success: false, message: "No audio file uploaded" });
+      return res
+        .status(400)
+        .json({ success: false, message: "No audio file uploaded" });
     }
 
     const audioUrl = req.file.path; // Cloudinary URL
@@ -511,7 +577,9 @@ app.post("/upload/audio", audioUpload.single("audio"), async (req, res) => {
     });
   } catch (error) {
     console.error("POST /upload/audio error:", error);
-    return res.status(500).json({ success: false, message: "Failed to upload audio" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to upload audio" });
   }
 });
 
@@ -522,26 +590,51 @@ app.get("/courses/:courseId/attempts", verifyTokenEarly, async (req, res) => {
     const { graded } = req.query; // optional: 'true' | 'false'
 
     let courseObjId;
-    try { courseObjId = new ObjectId(courseId); } catch {
-      return res.status(400).json({ success: false, message: "Invalid course id" });
+    try {
+      courseObjId = new ObjectId(courseId);
+    } catch {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid course id" });
     }
 
     // Load course and post to determine owner and community
-    const course = await communityCoursesCollection.findOne({ _id: courseObjId }, { projection: { postId: 1, communityId: 1 } });
-    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
-    const post = await communityPostsCollection.findOne({ _id: course.postId }, { projection: { authorId: 1 } });
-    if (!post) return res.status(404).json({ success: false, message: "Course post not found" });
+    const course = await communityCoursesCollection.findOne(
+      { _id: courseObjId },
+      { projection: { postId: 1, communityId: 1 } },
+    );
+    if (!course)
+      return res
+        .status(404)
+        .json({ success: false, message: "Course not found" });
+    const post = await communityPostsCollection.findOne(
+      { _id: course.postId },
+      { projection: { authorId: 1 } },
+    );
+    if (!post)
+      return res
+        .status(404)
+        .json({ success: false, message: "Course post not found" });
 
     const isOwner = post.authorId?.toString() === req.user._id?.toString();
-    const role = await getCommunityRole(req.user._id, course.communityId.toString());
+    const role = await getCommunityRole(
+      req.user._id,
+      course.communityId.toString(),
+    );
     const isCommunityAdmin = role.isMainAdmin || role.isAdmin;
     if (!isOwner && !isCommunityAdmin) {
-      return res.status(403).json({ success: false, message: "Not authorized to view attempts for this course" });
+      return res.status(403).json({
+        success: false,
+        message: "Not authorized to view attempts for this course",
+      });
     }
 
-    const query = { courseId: courseObjId, type: { $in: ['written', 'listening'] } };
-    if (graded === 'true') query.graded = true;
-    if (graded === 'false') query.graded = false;
+    const query = {
+      courseId: courseObjId,
+      type: { $in: ["written", "listening"] },
+    };
+    if (graded === "true") query.graded = true;
+    if (graded === "false") query.graded = false;
 
     const attempts = await communityExamAttemptsCollection
       .find(query)
@@ -549,171 +642,251 @@ app.get("/courses/:courseId/attempts", verifyTokenEarly, async (req, res) => {
       .toArray();
 
     // Join with user and exam details for context
-    const enriched = await Promise.all(attempts.map(async (att) => {
-      const user = await usersCollections.findOne({ _id: att.userId }, { projection: { name: 1, number: 1 } });
-      const exam = await communityExamsCollection.findOne({ _id: att.examId }, { projection: { type: 1, passingScore: 1, chapterId: 1 } });
-      return { ...att, user, exam };
-    }));
+    const enriched = await Promise.all(
+      attempts.map(async (att) => {
+        const user = await usersCollections.findOne(
+          { _id: att.userId },
+          { projection: { name: 1, number: 1 } },
+        );
+        const exam = await communityExamsCollection.findOne(
+          { _id: att.examId },
+          { projection: { type: 1, passingScore: 1, chapterId: 1 } },
+        );
+        return { ...att, user, exam };
+      }),
+    );
 
     return res.json({ success: true, data: enriched });
   } catch (error) {
     console.error("GET /courses/:courseId/attempts error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Get comprehensive student dashboard statistics for a course (owner/admin only)
-app.get("/courses/:courseId/student-dashboard", verifyTokenEarly, async (req, res) => {
-  try {
-    const { courseId } = req.params;
-    let courseObjId;
-    try { courseObjId = new ObjectId(courseId); } catch {
-      return res.status(400).json({ success: false, message: "Invalid course id" });
-    }
+app.get(
+  "/courses/:courseId/student-dashboard",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      const { courseId } = req.params;
+      let courseObjId;
+      try {
+        courseObjId = new ObjectId(courseId);
+      } catch {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid course id" });
+      }
 
-    // Load course and post to determine owner and community
-    const course = await communityCoursesCollection.findOne({ _id: courseObjId }, { projection: { postId: 1, communityId: 1, title: 1 } });
-    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
-    const post = await communityPostsCollection.findOne({ _id: course.postId }, { projection: { authorId: 1 } });
-    if (!post) return res.status(404).json({ success: false, message: "Course post not found" });
+      // Load course and post to determine owner and community
+      const course = await communityCoursesCollection.findOne(
+        { _id: courseObjId },
+        { projection: { postId: 1, communityId: 1, title: 1 } },
+      );
+      if (!course)
+        return res
+          .status(404)
+          .json({ success: false, message: "Course not found" });
+      const post = await communityPostsCollection.findOne(
+        { _id: course.postId },
+        { projection: { authorId: 1 } },
+      );
+      if (!post)
+        return res
+          .status(404)
+          .json({ success: false, message: "Course post not found" });
 
-    // Check authorization
-    const isOwner = post.authorId?.toString() === req.user._id?.toString();
-    const role = await getCommunityRole(req.user._id, course.communityId.toString());
-    const isCommunityAdmin = role.isMainAdmin || role.isAdmin;
-    if (!isOwner && !isCommunityAdmin) {
-      return res.status(403).json({ success: false, message: "Not authorized to view student dashboard for this course" });
-    }
+      // Check authorization
+      const isOwner = post.authorId?.toString() === req.user._id?.toString();
+      const role = await getCommunityRole(
+        req.user._id,
+        course.communityId.toString(),
+      );
+      const isCommunityAdmin = role.isMainAdmin || role.isAdmin;
+      if (!isOwner && !isCommunityAdmin) {
+        return res.status(403).json({
+          success: false,
+          message: "Not authorized to view student dashboard for this course",
+        });
+      }
 
-    // Get all exam attempts for this course
-    const allAttempts = await communityExamAttemptsCollection
-      .find({ courseId: courseObjId })
-      .sort({ createdAt: -1 })
-      .toArray();
+      // Get all exam attempts for this course
+      const allAttempts = await communityExamAttemptsCollection
+        .find({ courseId: courseObjId })
+        .sort({ createdAt: -1 })
+        .toArray();
 
-    // Get all exams for this course
-    const exams = await communityExamsCollection.find({ courseId: courseObjId }).toArray();
-    const chapters = await communityChaptersCollection.find({ courseId: courseObjId }).sort({ order: 1 }).toArray();
+      // Get all exams for this course
+      const exams = await communityExamsCollection
+        .find({ courseId: courseObjId })
+        .toArray();
+      const chapters = await communityChaptersCollection
+        .find({ courseId: courseObjId })
+        .sort({ order: 1 })
+        .toArray();
 
-    // Get unique students who attempted exams
-    const studentIds = [...new Set(allAttempts.map(att => att.userId.toString()))];
-    const students = await usersCollections.find({ _id: { $in: studentIds.map(id => new ObjectId(id)) } })
-      .project({ _id: 1, name: 1, number: 1, profileImage: 1 })
-      .toArray();
+      // Get unique students who attempted exams
+      const studentIds = [
+        ...new Set(allAttempts.map((att) => att.userId.toString())),
+      ];
+      const students = await usersCollections
+        .find({ _id: { $in: studentIds.map((id) => new ObjectId(id)) } })
+        .project({ _id: 1, name: 1, number: 1, profileImage: 1 })
+        .toArray();
 
-    // Get all course progress records
-    const progressRecords = await communityProgressCollection.find({ courseId: courseObjId }).toArray();
+      // Get all course progress records
+      const progressRecords = await communityProgressCollection
+        .find({ courseId: courseObjId })
+        .toArray();
 
-    // Build student statistics
-    const studentStats = students.map(student => {
-      const studentAttempts = allAttempts.filter(att => att.userId.toString() === student._id.toString());
-      const studentProgress = progressRecords.find(p => p.userId.toString() === student._id.toString());
+      // Build student statistics
+      const studentStats = students.map((student) => {
+        const studentAttempts = allAttempts.filter(
+          (att) => att.userId.toString() === student._id.toString(),
+        );
+        const studentProgress = progressRecords.find(
+          (p) => p.userId.toString() === student._id.toString(),
+        );
 
-      // Group attempts by exam
-      const attemptsByExam = {};
-      studentAttempts.forEach(att => {
-        const examId = att.examId.toString();
-        if (!attemptsByExam[examId]) attemptsByExam[examId] = [];
-        attemptsByExam[examId].push(att);
-      });
+        // Group attempts by exam
+        const attemptsByExam = {};
+        studentAttempts.forEach((att) => {
+          const examId = att.examId.toString();
+          if (!attemptsByExam[examId]) attemptsByExam[examId] = [];
+          attemptsByExam[examId].push(att);
+        });
 
-      // Calculate statistics
-      const totalAttempts = studentAttempts.length;
-      const gradedAttempts = studentAttempts.filter(att => att.graded === true);
-      const passedAttempts = gradedAttempts.filter(att => att.passed === true);
-      const failedAttempts = gradedAttempts.filter(att => att.passed === false);
-      const pendingGrading = studentAttempts.filter(att => att.graded === false);
+        // Calculate statistics
+        const totalAttempts = studentAttempts.length;
+        const gradedAttempts = studentAttempts.filter(
+          (att) => att.graded === true,
+        );
+        const passedAttempts = gradedAttempts.filter(
+          (att) => att.passed === true,
+        );
+        const failedAttempts = gradedAttempts.filter(
+          (att) => att.passed === false,
+        );
+        const pendingGrading = studentAttempts.filter(
+          (att) => att.graded === false,
+        );
 
-      // Calculate average score (only for graded attempts with scores)
-      const scoredAttempts = gradedAttempts.filter(att => att.score !== null && att.score !== undefined);
-      const averageScore = scoredAttempts.length > 0 
-        ? Math.round(scoredAttempts.reduce((sum, att) => sum + att.score, 0) / scoredAttempts.length)
-        : null;
+        // Calculate average score (only for graded attempts with scores)
+        const scoredAttempts = gradedAttempts.filter(
+          (att) => att.score !== null && att.score !== undefined,
+        );
+        const averageScore =
+          scoredAttempts.length > 0
+            ? Math.round(
+                scoredAttempts.reduce((sum, att) => sum + att.score, 0) /
+                  scoredAttempts.length,
+              )
+            : null;
 
-      // Get latest attempt for each exam with full details
-      const examResults = exams.map(exam => {
-        const examAttempts = attemptsByExam[exam._id.toString()] || [];
-        const latestAttempt = examAttempts.length > 0 ? examAttempts[0] : null;
-        const chapter = chapters.find(ch => ch._id.toString() === exam.chapterId.toString());
+        // Get latest attempt for each exam with full details
+        const examResults = exams.map((exam) => {
+          const examAttempts = attemptsByExam[exam._id.toString()] || [];
+          const latestAttempt =
+            examAttempts.length > 0 ? examAttempts[0] : null;
+          const chapter = chapters.find(
+            (ch) => ch._id.toString() === exam.chapterId.toString(),
+          );
+
+          return {
+            examId: exam._id,
+            examType: exam.type,
+            chapterTitle: chapter?.title || "Unknown Chapter",
+            chapterOrder: chapter?.order || 0,
+            attemptCount: examAttempts.length,
+            // Include exam questions for display
+            examQuestions: exam.questions || [],
+            passingScore: exam.passingScore || 0,
+            latestAttempt: latestAttempt
+              ? {
+                  attemptId: latestAttempt._id,
+                  score: latestAttempt.score,
+                  passed: latestAttempt.passed,
+                  graded: latestAttempt.graded,
+                  createdAt: latestAttempt.createdAt,
+                  correctAnswers: latestAttempt.correctAnswers,
+                  totalQuestions: latestAttempt.totalQuestions,
+                  // Include full answers for display
+                  answers: latestAttempt.answers || [],
+                  audioUrl: latestAttempt.audioUrl || null,
+                  feedback: latestAttempt.feedback || null,
+                }
+              : null,
+          };
+        });
+
+        // Course completion status
+        const completedLessons = studentProgress?.completedLessons?.length || 0;
+        const hasCertificate = studentProgress?.certificateIssued || false;
 
         return {
-          examId: exam._id,
-          examType: exam.type,
-          chapterTitle: chapter?.title || 'Unknown Chapter',
-          chapterOrder: chapter?.order || 0,
-          attemptCount: examAttempts.length,
-          // Include exam questions for display
-          examQuestions: exam.questions || [],
-          passingScore: exam.passingScore || 0,
-          latestAttempt: latestAttempt ? {
-            attemptId: latestAttempt._id,
-            score: latestAttempt.score,
-            passed: latestAttempt.passed,
-            graded: latestAttempt.graded,
-            createdAt: latestAttempt.createdAt,
-            correctAnswers: latestAttempt.correctAnswers,
-            totalQuestions: latestAttempt.totalQuestions,
-            // Include full answers for display
-            answers: latestAttempt.answers || [],
-            audioUrl: latestAttempt.audioUrl || null,
-            feedback: latestAttempt.feedback || null,
-          } : null
+          student: {
+            id: student._id,
+            name: student.name,
+            number: student.number,
+            profileImage: student.profileImage,
+          },
+          statistics: {
+            totalAttempts,
+            passedAttempts: passedAttempts.length,
+            failedAttempts: failedAttempts.length,
+            pendingGrading: pendingGrading.length,
+            averageScore,
+            completedLessons,
+            hasCertificate,
+          },
+          examResults,
+          lastActivity:
+            studentAttempts.length > 0 ? studentAttempts[0].createdAt : null,
         };
       });
 
-      // Course completion status
-      const completedLessons = studentProgress?.completedLessons?.length || 0;
-      const hasCertificate = studentProgress?.certificateIssued || false;
-
-      return {
-        student: {
-          id: student._id,
-          name: student.name,
-          number: student.number,
-          profileImage: student.profileImage,
-        },
-        statistics: {
-          totalAttempts,
-          passedAttempts: passedAttempts.length,
-          failedAttempts: failedAttempts.length,
-          pendingGrading: pendingGrading.length,
-          averageScore,
-          completedLessons,
-          hasCertificate,
-        },
-        examResults,
-        lastActivity: studentAttempts.length > 0 ? studentAttempts[0].createdAt : null,
+      // Overall course statistics
+      const overallStats = {
+        totalStudents: students.length,
+        totalAttempts: allAttempts.length,
+        totalExams: exams.length,
+        totalChapters: chapters.length,
+        gradedAttempts: allAttempts.filter((att) => att.graded === true).length,
+        pendingGrading: allAttempts.filter((att) => att.graded === false)
+          .length,
+        passRate:
+          allAttempts.filter((att) => att.graded === true).length > 0
+            ? Math.round(
+                (allAttempts.filter((att) => att.passed === true).length /
+                  allAttempts.filter((att) => att.graded === true).length) *
+                  100,
+              )
+            : 0,
+        certificatesIssued: progressRecords.filter(
+          (p) => p.certificateIssued === true,
+        ).length,
       };
-    });
 
-    // Overall course statistics
-    const overallStats = {
-      totalStudents: students.length,
-      totalAttempts: allAttempts.length,
-      totalExams: exams.length,
-      totalChapters: chapters.length,
-      gradedAttempts: allAttempts.filter(att => att.graded === true).length,
-      pendingGrading: allAttempts.filter(att => att.graded === false).length,
-      passRate: allAttempts.filter(att => att.graded === true).length > 0
-        ? Math.round((allAttempts.filter(att => att.passed === true).length / allAttempts.filter(att => att.graded === true).length) * 100)
-        : 0,
-      certificatesIssued: progressRecords.filter(p => p.certificateIssued === true).length,
-    };
-
-    return res.json({
-      success: true,
-      data: {
-        courseId: course._id,
-        courseTitle: course.title,
-        overallStats,
-        students: studentStats,
-      }
-    });
-  } catch (error) {
-    console.error("GET /courses/:courseId/student-dashboard error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+      return res.json({
+        success: true,
+        data: {
+          courseId: course._id,
+          courseTitle: course.title,
+          overallStats,
+          students: studentStats,
+        },
+      });
+    } catch (error) {
+      console.error("GET /courses/:courseId/student-dashboard error:", error);
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
+    }
+  },
+);
 
 // List communities created by the current user
 app.get("/my-communities", async (req, res) => {
@@ -730,7 +903,9 @@ app.get("/my-communities", async (req, res) => {
       return res.status(401).json({ success: false, message: "Invalid token" });
     }
     if (!user) {
-      return res.status(404).json({ success: false, message: "User not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
     }
 
     const mine = await communityCollection
@@ -750,7 +925,9 @@ app.get("/my-communities", async (req, res) => {
     return res.json({ success: true, data: mine });
   } catch (error) {
     console.error("GET /my-communities error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -761,14 +938,24 @@ app.get("/communities/:id/permissions", verifyTokenEarly, async (req, res) => {
     try {
       communityObjId = new ObjectId(req.params.id);
     } catch (_) {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
-    const role = await getCommunityRole(req.user._id, communityObjId.toString());
-    if (!role.exists) return res.status(404).json({ success: false, message: "Community not found" });
+    const role = await getCommunityRole(
+      req.user._id,
+      communityObjId.toString(),
+    );
+    if (!role.exists)
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
     return res.json({ success: true, data: role });
   } catch (error) {
     console.error("GET /communities/:id/permissions error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -779,87 +966,120 @@ app.post("/communities/:id/roles/add", verifyTokenEarly, async (req, res) => {
     try {
       communityObjId = new ObjectId(req.params.id);
     } catch (_) {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
     const { userId, role } = req.body; // role: 'admin' | 'editor'
     if (!userId || !role || !["admin", "editor"].includes(role)) {
-      return res.status(400).json({ success: false, message: "userId and valid role required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "userId and valid role required" });
     }
     let userObjId;
     try {
       userObjId = new ObjectId(userId);
     } catch (_) {
-      return res.status(400).json({ success: false, message: "Invalid userId" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid userId" });
     }
 
-    const community = await communityCollection.findOne({ _id: communityObjId });
-    if (!community) return res.status(404).json({ success: false, message: "Community not found" });
+    const community = await communityCollection.findOne({
+      _id: communityObjId,
+    });
+    if (!community)
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
     if (community.mainAdmin?.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: "Only mainAdmin can manage roles" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Only mainAdmin can manage roles" });
     }
 
     if (role === "admin") {
       await communityCollection.updateOne(
         { _id: communityObjId },
-        { $addToSet: { admins: userObjId }, $pull: { editors: userObjId } }
+        { $addToSet: { admins: userObjId }, $pull: { editors: userObjId } },
       );
     } else {
       await communityCollection.updateOne(
         { _id: communityObjId },
-        { $addToSet: { editors: userObjId }, $pull: { admins: userObjId } }
+        { $addToSet: { editors: userObjId }, $pull: { admins: userObjId } },
       );
     }
     return res.json({ success: true });
   } catch (error) {
     console.error("POST /communities/:id/roles/add error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Remove a role (admin/editor) from a user (mainAdmin only)
-app.post("/communities/:id/roles/remove", verifyTokenEarly, async (req, res) => {
-  try {
-    let communityObjId;
+app.post(
+  "/communities/:id/roles/remove",
+  verifyTokenEarly,
+  async (req, res) => {
     try {
-      communityObjId = new ObjectId(req.params.id);
-    } catch (_) {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
-    }
-    const { userId, role } = req.body; // role: 'admin' | 'editor'
-    if (!userId || !role || !["admin", "editor"].includes(role)) {
-      return res.status(400).json({ success: false, message: "userId and valid role required" });
-    }
-    let userObjId;
-    try {
-      userObjId = new ObjectId(userId);
-    } catch (_) {
-      return res.status(400).json({ success: false, message: "Invalid userId" });
-    }
+      let communityObjId;
+      try {
+        communityObjId = new ObjectId(req.params.id);
+      } catch (_) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid community id" });
+      }
+      const { userId, role } = req.body; // role: 'admin' | 'editor'
+      if (!userId || !role || !["admin", "editor"].includes(role)) {
+        return res
+          .status(400)
+          .json({ success: false, message: "userId and valid role required" });
+      }
+      let userObjId;
+      try {
+        userObjId = new ObjectId(userId);
+      } catch (_) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid userId" });
+      }
 
-    const community = await communityCollection.findOne({ _id: communityObjId });
-    if (!community) return res.status(404).json({ success: false, message: "Community not found" });
-    if (community.mainAdmin?.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: "Only mainAdmin can manage roles" });
-    }
+      const community = await communityCollection.findOne({
+        _id: communityObjId,
+      });
+      if (!community)
+        return res
+          .status(404)
+          .json({ success: false, message: "Community not found" });
+      if (community.mainAdmin?.toString() !== req.user._id.toString()) {
+        return res
+          .status(403)
+          .json({ success: false, message: "Only mainAdmin can manage roles" });
+      }
 
-    if (role === "admin") {
-      await communityCollection.updateOne(
-        { _id: communityObjId },
-        { $pull: { admins: userObjId } }
-      );
-    } else {
-      await communityCollection.updateOne(
-        { _id: communityObjId },
-        { $pull: { editors: userObjId } }
-      );
+      if (role === "admin") {
+        await communityCollection.updateOne(
+          { _id: communityObjId },
+          { $pull: { admins: userObjId } },
+        );
+      } else {
+        await communityCollection.updateOne(
+          { _id: communityObjId },
+          { $pull: { editors: userObjId } },
+        );
+      }
+      return res.json({ success: true });
+    } catch (error) {
+      console.error("POST /communities/:id/roles/remove error:", error);
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
     }
-    return res.json({ success: true });
-  } catch (error) {
-    console.error("POST /communities/:id/roles/remove error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
-
+  },
+);
 
 // Get community detail
 // (moved below after DB collection declarations)
@@ -885,17 +1105,21 @@ const JWT_SECRET = process.env.ACCESS_TOKEN_SECRET || process.env.JWT_SECRET;
 
 // Validate required environment variables on startup
 if (!JWT_SECRET) {
-  console.error("⚠️  WARNING: JWT_SECRET or ACCESS_TOKEN_SECRET is not set in environment variables!");
+  console.error(
+    "⚠️  WARNING: JWT_SECRET or ACCESS_TOKEN_SECRET is not set in environment variables!",
+  );
   console.error("⚠️  Authentication will fail without this variable.");
 }
 
 if (!process.env.DB_USER || !process.env.DB_PASS) {
-  console.error("⚠️  WARNING: DB_USER or DB_PASS is not set in environment variables!");
+  console.error(
+    "⚠️  WARNING: DB_USER or DB_PASS is not set in environment variables!",
+  );
   console.error("⚠️  Database connection will fail without these variables.");
 }
 
-// FlyWallet Coin to Taka conversion rate
-const COIN_TO_TAKA_RATE = 100; // 100 coins = 1 Taka
+// FlyWallet Point to Taka conversion rate
+const COIN_TO_TAKA_RATE = 1; // 1 point = 1 Taka
 const channelsCollection = db.collection("Channels");
 const channelessagesCollection = db.collection("channelMessages");
 const coursesCollection = db.collection("coursesCollection");
@@ -911,23 +1135,25 @@ const communityCollection = db.collection("communityCollection");
 const communityFollowsCollection = db.collection("communityFollowsCollection");
 const communityCoursesCollection = db.collection("communityCoursesCollection");
 const communityChaptersCollection = db.collection(
-  "communityChaptersCollection"
+  "communityChaptersCollection",
 );
 const communityLessonsCollection = db.collection("communityLessonsCollection");
 const communityExamsCollection = db.collection("communityExamsCollection");
 const communityExamAttemptsCollection = db.collection(
-  "communityExamAttemptsCollection"
+  "communityExamAttemptsCollection",
 );
 const communityCertificatesCollection = db.collection(
-  "communityCertificatesCollection"
+  "communityCertificatesCollection",
 );
 const communityPostsCollection = db.collection("communityPostsCollection");
-const communityPostLikesCollection = db.collection("communityPostLikesCollection");
+const communityPostLikesCollection = db.collection(
+  "communityPostLikesCollection",
+);
 const communityProgressCollection = db.collection(
-  "communityProgressCollection"
+  "communityProgressCollection",
 );
 const communityEnrollmentsCollection = db.collection(
-  "communityEnrollmentsCollection"
+  "communityEnrollmentsCollection",
 );
 // Jobs & Employment collections
 const jobsCollection = db.collection("jobsCollection");
@@ -950,54 +1176,67 @@ const GMINI_API_KEY = process.env.GMINI_API_KEY;
 (async () => {
   try {
     await connectToMongo();
-    
+
     // Text search index for opinions
     await opinionCollections.createIndex({ description: "text" });
     console.log("✅ Text index created for opinions");
-    
+
     // Location index for books
     await bookCollections.createIndex({ location: "2dsphere" });
     console.log("✅ Location index created for books");
-    
+
     // Performance: Indexes for frequently queried fields
     await usersCollections.createIndex({ number: 1 }, { unique: true });
     await usersCollections.createIndex({ email: 1 });
     await usersCollections.createIndex({ _id: 1, isOnline: 1 }); // For online status queries
-    
+
     await messagesCollections.createIndex({ receiverId: 1, isRead: 1 });
-    await messagesCollections.createIndex({ senderId: 1, receiverId: 1, timestamp: -1 });
-    
+    await messagesCollections.createIndex({
+      senderId: 1,
+      receiverId: 1,
+      timestamp: -1,
+    });
+
     await notifyCollections.createIndex({ receiverId: 1, isRead: 1 });
     await notifyCollections.createIndex({ receiverId: 1, timestamp: -1 });
-    
+
     await bookCollections.createIndex({ owner: 1 });
     await bookCollections.createIndex({ bookName: 1 });
-    
+
     await pdfCollections.createIndex({ bookName: 1 });
     await pdfCollections.createIndex({ writerName: 1 });
-    
+
     await opinionCollections.createIndex({ userName: 1 });
-    
+
     await productsCollection.createIndex({ category: 1, status: 1 });
-    await productsCollection.createIndex({ title: "text", description: "text" });
-    
+    await productsCollection.createIndex({
+      title: "text",
+      description: "text",
+    });
+
     await jobsCollection.createIndex({ status: 1, createdAt: -1 });
     await jobsCollection.createIndex({ title: "text", description: "text" });
-    
+
     await projectsCollection.createIndex({ status: 1, createdAt: -1 });
-    await projectsCollection.createIndex({ title: "text", description: "text" });
-    
-    await communityPostsCollection.createIndex({ communityId: 1, createdAt: -1 });
+    await projectsCollection.createIndex({
+      title: "text",
+      description: "text",
+    });
+
+    await communityPostsCollection.createIndex({
+      communityId: 1,
+      createdAt: -1,
+    });
     await communityPostsCollection.createIndex({ authorId: 1 });
-    
+
     await coursesCollection.createIndex({ status: 1 });
     await coursesCollection.createIndex({ title: "text" });
-    
+
     // Indexes for admin posts (home page)
     await adminPostCollections.createIndex({ category: 1 });
     await adminPostCollections.createIndex({ date: -1, time: -1 }); // For sorting
     await adminPostCollections.createIndex({ createdAt: -1 }); // Fallback sorting
-    
+
     console.log("✅ All database indexes created successfully!");
   } catch (error) {
     console.error("❌ Error creating indexes:", error);
@@ -1014,23 +1253,23 @@ app.get("/health", async (req, res) => {
   try {
     await connectToMongo();
     await client.db("admin").command({ ping: 1 });
-    
+
     // Test collections access
     const db = client.db("flybook");
     const testCollection = db.collection("usersCollections");
     await testCollection.findOne({}, { limit: 1 });
-    
+
     res.json({
       status: "healthy",
       database: "connected",
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   } catch (error) {
     res.status(503).json({
       status: "unhealthy",
       database: "disconnected",
       error: error.message,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
     });
   }
 });
@@ -1043,20 +1282,22 @@ app.get("/diagnostics", async (req, res) => {
       nodeEnv: process.env.NODE_ENV || "not set",
       hasDbUser: !!process.env.DB_USER,
       hasDbPass: !!process.env.DB_PASS,
-      mongoUri: process.env.DB_USER ? `mongodb+srv://${process.env.DB_USER}:***@cluster0.ivo4yuq.mongodb.net/` : "not configured"
+      mongoUri: process.env.DB_USER
+        ? `mongodb+srv://${process.env.DB_USER}:***@cluster0.ivo4yuq.mongodb.net/`
+        : "not configured",
     },
     connection: {
       isConnected: isConnected,
       hasConnectionPromise: !!connectionPromise,
-      retries: connectionRetries
+      retries: connectionRetries,
     },
     network: {
       mongoHost: "cluster0.ivo4yuq.mongodb.net",
-      note: "Check if this host is reachable from VPS: ping cluster0.ivo4yuq.mongodb.net"
+      note: "Check if this host is reachable from VPS: ping cluster0.ivo4yuq.mongodb.net",
     },
-    recommendations: []
+    recommendations: [],
   };
-  
+
   // Test connection
   try {
     await connectToMongo();
@@ -1066,19 +1307,32 @@ app.get("/diagnostics", async (req, res) => {
     diagnostics.connection.test = "failed";
     diagnostics.connection.error = error.message;
     diagnostics.status = "❌ Connection failed";
-    
-    if (error.message.includes("timeout") || error.message.includes("Server selection")) {
-      diagnostics.recommendations.push("1. Check MongoDB Atlas Network Access - whitelist VPS IP address");
-      diagnostics.recommendations.push("2. For testing, you can temporarily allow 0.0.0.0/0 (all IPs) in MongoDB Atlas");
-      diagnostics.recommendations.push("3. Check VPS firewall: sudo ufw status (should allow outbound on port 27017)");
-      diagnostics.recommendations.push("4. Test DNS: nslookup cluster0.ivo4yuq.mongodb.net");
+
+    if (
+      error.message.includes("timeout") ||
+      error.message.includes("Server selection")
+    ) {
+      diagnostics.recommendations.push(
+        "1. Check MongoDB Atlas Network Access - whitelist VPS IP address",
+      );
+      diagnostics.recommendations.push(
+        "2. For testing, you can temporarily allow 0.0.0.0/0 (all IPs) in MongoDB Atlas",
+      );
+      diagnostics.recommendations.push(
+        "3. Check VPS firewall: sudo ufw status (should allow outbound on port 27017)",
+      );
+      diagnostics.recommendations.push(
+        "4. Test DNS: nslookup cluster0.ivo4yuq.mongodb.net",
+      );
     }
-    
+
     if (!process.env.DB_USER || !process.env.DB_PASS) {
-      diagnostics.recommendations.push("5. Set DB_USER and DB_PASS environment variables in PM2 or .env file");
+      diagnostics.recommendations.push(
+        "5. Set DB_USER and DB_PASS environment variables in PM2 or .env file",
+      );
     }
   }
-  
+
   res.json(diagnostics);
 });
 
@@ -1108,7 +1362,9 @@ async function verifyTokenEarly(req, res, next) {
 
 // Helper: role check inside a community
 async function getCommunityRole(userId, communityId) {
-  const comm = await communityCollection.findOne({ _id: new ObjectId(communityId) });
+  const comm = await communityCollection.findOne({
+    _id: new ObjectId(communityId),
+  });
   if (!comm) return { exists: false };
   const uid = userId?.toString();
   const isMainAdmin = comm.mainAdmin?.toString() === uid;
@@ -1125,19 +1381,36 @@ app.post("/communities/:id/posts", verifyTokenEarly, async (req, res) => {
     try {
       communityObjId = new ObjectId(communityId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
 
-    const { title, description, type, content, visibility = "public", accessCode = null, chapters = [] } = req.body;
+    const {
+      title,
+      description,
+      type,
+      content,
+      visibility = "public",
+      accessCode = null,
+      chapters = [],
+    } = req.body;
     if (!title || !type) {
-      return res.status(400).json({ success: false, message: "title and type are required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "title and type are required" });
     }
 
     // Role enforcement: main admin/admin/editor can create posts
     const role = await getCommunityRole(req.user._id, communityId);
-    if (!role.exists) return res.status(404).json({ success: false, message: "Community not found" });
+    if (!role.exists)
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
     if (!(role.isMainAdmin || role.isAdmin || role.isEditor)) {
-      return res.status(403).json({ success: false, message: "Insufficient permissions" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Insufficient permissions" });
     }
 
     const baseDoc = {
@@ -1160,7 +1433,10 @@ app.post("/communities/:id/posts", verifyTokenEarly, async (req, res) => {
     }
 
     // For course posts: create post, plus course/chapters/lessons/exams
-    const postResult = await communityPostsCollection.insertOne({ ...baseDoc, content: null });
+    const postResult = await communityPostsCollection.insertOne({
+      ...baseDoc,
+      content: null,
+    });
     const courseDoc = {
       postId: postResult.insertedId,
       communityId: communityObjId,
@@ -1203,10 +1479,16 @@ app.post("/communities/:id/posts", verifyTokenEarly, async (req, res) => {
       }
     }
 
-    return res.status(201).json({ success: true, postId: postResult.insertedId, courseId: courseResult.insertedId });
+    return res.status(201).json({
+      success: true,
+      postId: postResult.insertedId,
+      courseId: courseResult.insertedId,
+    });
   } catch (error) {
     console.error("POST /communities/:id/posts error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1217,13 +1499,22 @@ app.patch("/communities/:id", verifyTokenEarly, async (req, res) => {
     try {
       communityObjId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
 
-    const community = await communityCollection.findOne({ _id: communityObjId });
-    if (!community) return res.status(404).json({ success: false, message: "Community not found" });
+    const community = await communityCollection.findOne({
+      _id: communityObjId,
+    });
+    if (!community)
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
     if (community.mainAdmin?.toString() !== req.user._id.toString()) {
-      return res.status(403).json({ success: false, message: "Only owner can update community" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Only owner can update community" });
     }
 
     const allowed = ["name", "description", "logo", "coverImage"];
@@ -1232,7 +1523,9 @@ app.patch("/communities/:id", verifyTokenEarly, async (req, res) => {
       if (k in req.body) $set[k] = req.body[k];
     }
     if (!Object.keys($set).length) {
-      return res.status(400).json({ success: false, message: "No updatable fields provided" });
+      return res
+        .status(400)
+        .json({ success: false, message: "No updatable fields provided" });
     }
 
     await communityCollection.updateOne({ _id: communityObjId }, { $set });
@@ -1240,7 +1533,9 @@ app.patch("/communities/:id", verifyTokenEarly, async (req, res) => {
     return res.json({ success: true, data: updated });
   } catch (error) {
     console.error("PATCH /communities/:id error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1252,7 +1547,9 @@ app.get("/communities/:id/posts", async (req, res) => {
     try {
       communityObjId = new ObjectId(communityId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
 
     const { accessCode } = req.query;
@@ -1264,18 +1561,28 @@ app.get("/communities/:id/posts", async (req, res) => {
       // fetch all and filter below for simplicity
     }
 
-    const posts = await communityPostsCollection.find({ communityId: communityObjId }).sort({ createdAt: -1 }).toArray();
+    const posts = await communityPostsCollection
+      .find({ communityId: communityObjId })
+      .sort({ createdAt: -1 })
+      .toArray();
 
     const filtered = posts.filter((p) => {
       if (p.visibility === "public") return true;
-      if (p.visibility === "private" && accessCode && accessCode === p.accessCode) return true;
+      if (
+        p.visibility === "private" &&
+        accessCode &&
+        accessCode === p.accessCode
+      )
+        return true;
       return false;
     });
 
     return res.json({ success: true, data: filtered });
   } catch (error) {
     console.error("GET /communities/:id/posts error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1286,17 +1593,24 @@ app.get("/posts/:postId/course", async (req, res) => {
     try {
       postObjId = new ObjectId(req.params.postId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid post id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid post id" });
     }
     const course = await communityCoursesCollection.findOne(
       { postId: postObjId },
-      { projection: { _id: 1 } }
+      { projection: { _id: 1 } },
     );
-    if (!course) return res.status(404).json({ success: false, message: "Course not found for this post" });
+    if (!course)
+      return res
+        .status(404)
+        .json({ success: false, message: "Course not found for this post" });
     return res.json({ success: true, courseId: course._id });
   } catch (error) {
     console.error("GET /posts/:postId/course error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1307,7 +1621,9 @@ app.post("/posts/:postId/like", verifyTokenEarly, async (req, res) => {
     try {
       postObjId = new ObjectId(req.params.postId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid post id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid post id" });
     }
 
     const existing = await communityPostLikesCollection.findOne({
@@ -1320,7 +1636,7 @@ app.post("/posts/:postId/like", verifyTokenEarly, async (req, res) => {
       await communityPostLikesCollection.deleteOne({ _id: existing._id });
       await communityPostsCollection.updateOne(
         { _id: postObjId },
-        { $inc: { likesCount: -1 } }
+        { $inc: { likesCount: -1 } },
       );
       return res.json({ success: true, liked: false });
     } else {
@@ -1332,13 +1648,15 @@ app.post("/posts/:postId/like", verifyTokenEarly, async (req, res) => {
       });
       await communityPostsCollection.updateOne(
         { _id: postObjId },
-        { $inc: { likesCount: 1 } }
+        { $inc: { likesCount: 1 } },
       );
       return res.json({ success: true, liked: true });
     }
   } catch (error) {
     console.error("POST /posts/:postId/like error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1349,16 +1667,23 @@ app.get("/posts/:postId/liked", verifyTokenEarly, async (req, res) => {
     try {
       postObjId = new ObjectId(req.params.postId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid post id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid post id" });
     }
-    const doc = await communityPostLikesCollection.findOne({
-      postId: postObjId,
-      userId: req.user._id,
-    }, { projection: { _id: 1 } });
+    const doc = await communityPostLikesCollection.findOne(
+      {
+        postId: postObjId,
+        userId: req.user._id,
+      },
+      { projection: { _id: 1 } },
+    );
     return res.json({ success: true, liked: !!doc });
   } catch (error) {
     console.error("GET /posts/:postId/liked error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1369,10 +1694,17 @@ app.post("/courses/:courseId/enroll", verifyTokenEarly, async (req, res) => {
     try {
       courseObjId = new ObjectId(req.params.courseId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid course id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid course id" });
     }
-    const course = await communityCoursesCollection.findOne({ _id: courseObjId });
-    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+    const course = await communityCoursesCollection.findOne({
+      _id: courseObjId,
+    });
+    if (!course)
+      return res
+        .status(404)
+        .json({ success: false, message: "Course not found" });
 
     await communityEnrollmentsCollection.updateOne(
       { userId: req.user._id, courseId: courseObjId },
@@ -1386,61 +1718,86 @@ app.post("/courses/:courseId/enroll", verifyTokenEarly, async (req, res) => {
           createdAt: new Date(),
         },
       },
-      { upsert: true }
+      { upsert: true },
     );
     return res.status(201).json({ success: true });
   } catch (error) {
     console.error("POST /courses/:courseId/enroll error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Admin enroll another user
-app.post("/courses/:courseId/enroll-user", verifyTokenEarly, async (req, res) => {
-  try {
-    let courseObjId;
+app.post(
+  "/courses/:courseId/enroll-user",
+  verifyTokenEarly,
+  async (req, res) => {
     try {
-      courseObjId = new ObjectId(req.params.courseId);
-    } catch {
-      return res.status(400).json({ success: false, message: "Invalid course id" });
-    }
-    const { userId } = req.body;
-    if (!userId) return res.status(400).json({ success: false, message: "userId required" });
-    let userObjId;
-    try {
-      userObjId = new ObjectId(userId);
-    } catch {
-      return res.status(400).json({ success: false, message: "Invalid userId" });
-    }
+      let courseObjId;
+      try {
+        courseObjId = new ObjectId(req.params.courseId);
+      } catch {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid course id" });
+      }
+      const { userId } = req.body;
+      if (!userId)
+        return res
+          .status(400)
+          .json({ success: false, message: "userId required" });
+      let userObjId;
+      try {
+        userObjId = new ObjectId(userId);
+      } catch {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid userId" });
+      }
 
-    const course = await communityCoursesCollection.findOne({ _id: courseObjId });
-    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+      const course = await communityCoursesCollection.findOne({
+        _id: courseObjId,
+      });
+      if (!course)
+        return res
+          .status(404)
+          .json({ success: false, message: "Course not found" });
 
-    const role = await getCommunityRole(req.user._id, course.communityId.toString());
-    if (!(role.isMainAdmin || role.isAdmin || role.isEditor)) {
-      return res.status(403).json({ success: false, message: "Insufficient permissions" });
-    }
+      const role = await getCommunityRole(
+        req.user._id,
+        course.communityId.toString(),
+      );
+      if (!(role.isMainAdmin || role.isAdmin || role.isEditor)) {
+        return res
+          .status(403)
+          .json({ success: false, message: "Insufficient permissions" });
+      }
 
-    await communityEnrollmentsCollection.updateOne(
-      { userId: userObjId, courseId: courseObjId },
-      {
-        $setOnInsert: {
-          userId: userObjId,
-          courseId: courseObjId,
-          postId: course.postId,
-          communityId: course.communityId,
-          role: "student",
-          createdAt: new Date(),
+      await communityEnrollmentsCollection.updateOne(
+        { userId: userObjId, courseId: courseObjId },
+        {
+          $setOnInsert: {
+            userId: userObjId,
+            courseId: courseObjId,
+            postId: course.postId,
+            communityId: course.communityId,
+            role: "student",
+            createdAt: new Date(),
+          },
         },
-      },
-      { upsert: true }
-    );
-    return res.status(201).json({ success: true });
-  } catch (error) {
-    console.error("POST /courses/:courseId/enroll-user error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+        { upsert: true },
+      );
+      return res.status(201).json({ success: true });
+    } catch (error) {
+      console.error("POST /courses/:courseId/enroll-user error:", error);
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
+    }
+  },
+);
 
 // Check if current user is enrolled in a course
 app.get("/courses/:courseId/enrolled", verifyTokenEarly, async (req, res) => {
@@ -1449,13 +1806,20 @@ app.get("/courses/:courseId/enrolled", verifyTokenEarly, async (req, res) => {
     try {
       courseObjId = new ObjectId(req.params.courseId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid course id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid course id" });
     }
-    const doc = await communityEnrollmentsCollection.findOne({ userId: req.user._id, courseId: courseObjId }, { projection: { _id: 1 } });
+    const doc = await communityEnrollmentsCollection.findOne(
+      { userId: req.user._id, courseId: courseObjId },
+      { projection: { _id: 1 } },
+    );
     return res.json({ success: true, enrolled: !!doc });
   } catch (error) {
     console.error("GET /courses/:courseId/enrolled error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1466,45 +1830,74 @@ app.get("/courses/:courseId/outline", verifyTokenEarly, async (req, res) => {
     try {
       courseObjId = new ObjectId(req.params.courseId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid course id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid course id" });
     }
     const course = await communityCoursesCollection.findOne(
       { _id: courseObjId },
-      { projection: { _id: 1, title: 1, communityId: 1, postId: 1 } }
+      { projection: { _id: 1, title: 1, communityId: 1, postId: 1 } },
     );
-    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+    if (!course)
+      return res
+        .status(404)
+        .json({ success: false, message: "Course not found" });
 
-    const chapters = await communityChaptersCollection.find({ courseId: courseObjId }).sort({ order: 1 }).toArray();
-    const lessons = await communityLessonsCollection.find({ courseId: courseObjId }).sort({ chapterId: 1, order: 1 }).toArray();
-    const exams = await communityExamsCollection.find({ courseId: courseObjId }).toArray();
+    const chapters = await communityChaptersCollection
+      .find({ courseId: courseObjId })
+      .sort({ order: 1 })
+      .toArray();
+    const lessons = await communityLessonsCollection
+      .find({ courseId: courseObjId })
+      .sort({ chapterId: 1, order: 1 })
+      .toArray();
+    const exams = await communityExamsCollection
+      .find({ courseId: courseObjId })
+      .toArray();
 
-    const examByChapter = new Map(exams.map((e) => [e.chapterId.toString(), e]));
+    const examByChapter = new Map(
+      exams.map((e) => [e.chapterId.toString(), e]),
+    );
 
     const outline = chapters.map((ch) => {
-      const chLessons = lessons.filter((l) => l.chapterId.toString() === ch._id.toString());
+      const chLessons = lessons.filter(
+        (l) => l.chapterId.toString() === ch._id.toString(),
+      );
       const ex = examByChapter.get(ch._id.toString());
       return {
         chapterId: ch._id,
         title: ch.title,
         order: ch.order,
-        lessons: chLessons.map((l) => ({ lessonId: l._id, order: l.order, videoUrl: l.videoUrl })),
+        lessons: chLessons.map((l) => ({
+          lessonId: l._id,
+          order: l.order,
+          videoUrl: l.videoUrl,
+        })),
         exam: ex
           ? {
               examId: ex._id,
               type: ex.type,
               passingScore: ex.passingScore,
               questions: Array.isArray(ex.questions)
-                ? ex.questions.map((q) => ({ question: q.question, options: q.options }))
+                ? ex.questions.map((q) => ({
+                    question: q.question,
+                    options: q.options,
+                  }))
                 : [],
             }
           : null,
       };
     });
 
-    return res.json({ success: true, data: { courseId: course._id, title: course.title, outline } });
+    return res.json({
+      success: true,
+      data: { courseId: course._id, title: course.title, outline },
+    });
   } catch (error) {
     console.error("GET /courses/:courseId/outline error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1515,18 +1908,28 @@ app.get("/courses/:courseId/progress", verifyTokenEarly, async (req, res) => {
     try {
       courseObjId = new ObjectId(req.params.courseId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid course id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid course id" });
     }
-    const progress = await communityProgressCollection.findOne({ userId: req.user._id, courseId: courseObjId });
+    const progress = await communityProgressCollection.findOne({
+      userId: req.user._id,
+      courseId: courseObjId,
+    });
     const attempts = await communityExamAttemptsCollection
       .find({ userId: req.user._id, courseId: courseObjId })
       .project({ examId: 1, score: 1, passed: 1, createdAt: 1 })
       .sort({ createdAt: -1 })
       .toArray();
-    return res.json({ success: true, data: { completedLessons: progress?.completedLessons || [], attempts } });
+    return res.json({
+      success: true,
+      data: { completedLessons: progress?.completedLessons || [], attempts },
+    });
   } catch (error) {
     console.error("GET /courses/:courseId/progress error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -1537,48 +1940,73 @@ app.get("/exams/:examId", verifyTokenEarly, async (req, res) => {
     try {
       examObjId = new ObjectId(req.params.examId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid exam id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid exam id" });
     }
     const ex = await communityExamsCollection.findOne({ _id: examObjId });
-    if (!ex) return res.status(404).json({ success: false, message: "Exam not found" });
+    if (!ex)
+      return res
+        .status(404)
+        .json({ success: false, message: "Exam not found" });
     const sanitized = {
       examId: ex._id,
       type: ex.type,
       passingScore: ex.passingScore,
-      questions: Array.isArray(ex.questions) ? ex.questions.map((q) => ({ question: q.question, options: q.options })) : [],
+      questions: Array.isArray(ex.questions)
+        ? ex.questions.map((q) => ({
+            question: q.question,
+            options: q.options,
+          }))
+        : [],
     };
     return res.json({ success: true, data: sanitized });
   } catch (error) {
     console.error("GET /exams/:examId error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Mark lesson complete for a user
-app.post("/courses/:courseId/lessons/:lessonId/complete", verifyTokenEarly, async (req, res) => {
-  try {
-    const { courseId, lessonId } = req.params;
-    let courseObjId, lessonObjId;
+app.post(
+  "/courses/:courseId/lessons/:lessonId/complete",
+  verifyTokenEarly,
+  async (req, res) => {
     try {
-      courseObjId = new ObjectId(courseId);
-      lessonObjId = new ObjectId(lessonId);
-    } catch {
-      return res.status(400).json({ success: false, message: "Invalid id" });
+      const { courseId, lessonId } = req.params;
+      let courseObjId, lessonObjId;
+      try {
+        courseObjId = new ObjectId(courseId);
+        lessonObjId = new ObjectId(lessonId);
+      } catch {
+        return res.status(400).json({ success: false, message: "Invalid id" });
+      }
+
+      const progressKey = { userId: req.user._id, courseId: courseObjId };
+      await communityProgressCollection.updateOne(
+        progressKey,
+        {
+          $addToSet: { completedLessons: lessonObjId },
+          $setOnInsert: { createdAt: new Date() },
+          $set: { updatedAt: new Date() },
+        },
+        { upsert: true },
+      );
+
+      return res.json({ success: true });
+    } catch (error) {
+      console.error(
+        "POST /courses/:courseId/lessons/:lessonId/complete error:",
+        error,
+      );
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
     }
-
-    const progressKey = { userId: req.user._id, courseId: courseObjId };
-    await communityProgressCollection.updateOne(progressKey, {
-      $addToSet: { completedLessons: lessonObjId },
-      $setOnInsert: { createdAt: new Date() },
-      $set: { updatedAt: new Date() },
-    }, { upsert: true });
-
-    return res.json({ success: true });
-  } catch (error) {
-    console.error("POST /courses/:courseId/lessons/:lessonId/complete error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+  },
+);
 
 // Attempt an exam (auto-grade quiz type, manual grade for written/listening)
 app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
@@ -1588,17 +2016,25 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
     try {
       examObjId = new ObjectId(examId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid exam id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid exam id" });
     }
 
     const exam = await communityExamsCollection.findOne({ _id: examObjId });
-    if (!exam) return res.status(404).json({ success: false, message: "Exam not found" });
+    if (!exam)
+      return res
+        .status(404)
+        .json({ success: false, message: "Exam not found" });
 
     const { answers, audioUrl, proctoring } = req.body; // answers: [{questionIndex, answer}], audioUrl for listening, proctoring summary
 
     // If client indicates submission must be blocked due to proctoring
     if (proctoring && proctoring.blockedSubmission === true) {
-      return res.status(400).json({ success: false, message: "Submission blocked due to proctoring violations" });
+      return res.status(400).json({
+        success: false,
+        message: "Submission blocked due to proctoring violations",
+      });
     }
 
     // Quiz type: auto-grade
@@ -1615,7 +2051,7 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
       const percentageScore = Math.round((score / totalQuestions) * 100);
       const passingScoreThreshold = Number(exam.passingScore || 0);
       const passed = percentageScore >= passingScoreThreshold;
-      
+
       const attemptDoc = {
         userId: req.user._id,
         examId: exam._id,
@@ -1632,8 +2068,15 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
         createdAt: new Date(),
         proctoring: proctoring || null,
       };
-      const attemptRes = await communityExamAttemptsCollection.insertOne(attemptDoc);
-      return res.status(201).json({ success: true, attemptId: attemptRes.insertedId, score: percentageScore, correctAnswers: score, passed });
+      const attemptRes =
+        await communityExamAttemptsCollection.insertOne(attemptDoc);
+      return res.status(201).json({
+        success: true,
+        attemptId: attemptRes.insertedId,
+        score: percentageScore,
+        correctAnswers: score,
+        passed,
+      });
     }
 
     // Written type: pending manual grading
@@ -1652,8 +2095,14 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
         createdAt: new Date(),
         proctoring: proctoring || null,
       };
-      const attemptRes = await communityExamAttemptsCollection.insertOne(attemptDoc);
-      return res.status(201).json({ success: true, attemptId: attemptRes.insertedId, message: "Submitted for grading", graded: false });
+      const attemptRes =
+        await communityExamAttemptsCollection.insertOne(attemptDoc);
+      return res.status(201).json({
+        success: true,
+        attemptId: attemptRes.insertedId,
+        message: "Submitted for grading",
+        graded: false,
+      });
     }
 
     // Listening type: pending manual grading
@@ -1673,82 +2122,131 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
         createdAt: new Date(),
         proctoring: proctoring || null,
       };
-      const attemptRes = await communityExamAttemptsCollection.insertOne(attemptDoc);
-      return res.status(201).json({ success: true, attemptId: attemptRes.insertedId, message: "Submitted for grading", graded: false });
+      const attemptRes =
+        await communityExamAttemptsCollection.insertOne(attemptDoc);
+      return res.status(201).json({
+        success: true,
+        attemptId: attemptRes.insertedId,
+        message: "Submitted for grading",
+        graded: false,
+      });
     }
 
-    return res.status(400).json({ success: false, message: "Invalid exam type" });
+    return res
+      .status(400)
+      .json({ success: false, message: "Invalid exam type" });
   } catch (error) {
     console.error("POST /exams/:examId/attempt error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Grade a written/listening exam attempt (course owner or community admin only)
-app.post("/exams/attempts/:attemptId/grade", verifyTokenEarly, async (req, res) => {
-  try {
-    const { attemptId } = req.params;
-    const { score, feedback } = req.body;
-
-    // Validate id
-    let attemptObjId;
+app.post(
+  "/exams/attempts/:attemptId/grade",
+  verifyTokenEarly,
+  async (req, res) => {
     try {
-      attemptObjId = new ObjectId(attemptId);
-    } catch {
-      return res.status(400).json({ success: false, message: "Invalid attempt id" });
-    }
+      const { attemptId } = req.params;
+      const { score, feedback } = req.body;
 
-    // Load attempt and exam
-    const attempt = await communityExamAttemptsCollection.findOne({ _id: attemptObjId });
-    if (!attempt) return res.status(404).json({ success: false, message: "Attempt not found" });
-
-    const exam = await communityExamsCollection.findOne({ _id: attempt.examId });
-    if (!exam) return res.status(404).json({ success: false, message: "Exam not found" });
-
-    // Authorization: Only course owner (post author) or community admins can grade
-    const course = await communityCoursesCollection.findOne({ _id: exam.courseId }, { projection: { communityId: 1, postId: 1 } });
-    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
-
-    // Find the post to get the author (course owner)
-    const post = await communityPostsCollection.findOne({ _id: course.postId }, { projection: { authorId: 1, communityId: 1 } });
-    if (!post) return res.status(404).json({ success: false, message: "Course post not found" });
-
-    const isOwner = post.authorId?.toString() === req.user._id?.toString();
-    const role = await getCommunityRole(req.user._id, (post.communityId || course.communityId).toString());
-    const isCommunityAdmin = role.isMainAdmin || role.isAdmin;
-    if (!isOwner && !isCommunityAdmin) {
-      return res.status(403).json({ success: false, message: "Not authorized to grade this attempt" });
-    }
-
-    // Only allow grading written/listening types
-    if (!['written', 'listening'].includes(exam.type)) {
-      return res.status(400).json({ success: false, message: "Only written/listening attempts require grading" });
-    }
-
-    const percentageScore = Math.max(0, Math.min(100, Number(score)));
-    const passingScoreThreshold = Number(exam.passingScore || 0);
-    const passed = percentageScore >= passingScoreThreshold;
-
-    await communityExamAttemptsCollection.updateOne(
-      { _id: attemptObjId },
-      {
-        $set: {
-          score: percentageScore,
-          passed,
-          graded: true,
-          feedback: feedback || "",
-          gradedBy: req.user._id,
-          gradedAt: new Date(),
-        },
+      // Validate id
+      let attemptObjId;
+      try {
+        attemptObjId = new ObjectId(attemptId);
+      } catch {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid attempt id" });
       }
-    );
 
-    return res.json({ success: true, score: percentageScore, passed });
-  } catch (error) {
-    console.error("POST /exams/attempts/:attemptId/grade error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+      // Load attempt and exam
+      const attempt = await communityExamAttemptsCollection.findOne({
+        _id: attemptObjId,
+      });
+      if (!attempt)
+        return res
+          .status(404)
+          .json({ success: false, message: "Attempt not found" });
+
+      const exam = await communityExamsCollection.findOne({
+        _id: attempt.examId,
+      });
+      if (!exam)
+        return res
+          .status(404)
+          .json({ success: false, message: "Exam not found" });
+
+      // Authorization: Only course owner (post author) or community admins can grade
+      const course = await communityCoursesCollection.findOne(
+        { _id: exam.courseId },
+        { projection: { communityId: 1, postId: 1 } },
+      );
+      if (!course)
+        return res
+          .status(404)
+          .json({ success: false, message: "Course not found" });
+
+      // Find the post to get the author (course owner)
+      const post = await communityPostsCollection.findOne(
+        { _id: course.postId },
+        { projection: { authorId: 1, communityId: 1 } },
+      );
+      if (!post)
+        return res
+          .status(404)
+          .json({ success: false, message: "Course post not found" });
+
+      const isOwner = post.authorId?.toString() === req.user._id?.toString();
+      const role = await getCommunityRole(
+        req.user._id,
+        (post.communityId || course.communityId).toString(),
+      );
+      const isCommunityAdmin = role.isMainAdmin || role.isAdmin;
+      if (!isOwner && !isCommunityAdmin) {
+        return res.status(403).json({
+          success: false,
+          message: "Not authorized to grade this attempt",
+        });
+      }
+
+      // Only allow grading written/listening types
+      if (!["written", "listening"].includes(exam.type)) {
+        return res.status(400).json({
+          success: false,
+          message: "Only written/listening attempts require grading",
+        });
+      }
+
+      const percentageScore = Math.max(0, Math.min(100, Number(score)));
+      const passingScoreThreshold = Number(exam.passingScore || 0);
+      const passed = percentageScore >= passingScoreThreshold;
+
+      await communityExamAttemptsCollection.updateOne(
+        { _id: attemptObjId },
+        {
+          $set: {
+            score: percentageScore,
+            passed,
+            graded: true,
+            feedback: feedback || "",
+            gradedBy: req.user._id,
+            gradedAt: new Date(),
+          },
+        },
+      );
+
+      return res.json({ success: true, score: percentageScore, passed });
+    } catch (error) {
+      console.error("POST /exams/attempts/:attemptId/grade error:", error);
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
+    }
+  },
+);
 
 // Get ungraded attempts (platform-wide; internal/debug)
 app.get("/exams/attempts/ungraded", verifyTokenEarly, async (req, res) => {
@@ -1761,253 +2259,315 @@ app.get("/exams/attempts/ungraded", verifyTokenEarly, async (req, res) => {
     // Populate user and exam details
     const enriched = await Promise.all(
       attempts.map(async (att) => {
-        const user = await usersCollections.findOne({ _id: att.userId }, { projection: { name: 1, number: 1 } });
-        const exam = await communityExamsCollection.findOne({ _id: att.examId }, { projection: { type: 1, questions: 1 } });
+        const user = await usersCollections.findOne(
+          { _id: att.userId },
+          { projection: { name: 1, number: 1 } },
+        );
+        const exam = await communityExamsCollection.findOne(
+          { _id: att.examId },
+          { projection: { type: 1, questions: 1 } },
+        );
         return { ...att, user, exam };
-      })
+      }),
     );
 
     return res.json({ success: true, data: enriched });
   } catch (error) {
     console.error("GET /exams/attempts/ungraded error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Issue certificate when course completed (all lessons completed and all chapter exams passed where present)
-app.post("/courses/:courseId/certificate", verifyTokenEarly, async (req, res) => {
-  try {
-    const { courseId } = req.params;
-    let courseObjId;
+app.post(
+  "/courses/:courseId/certificate",
+  verifyTokenEarly,
+  async (req, res) => {
     try {
-      courseObjId = new ObjectId(courseId);
-    } catch {
-      return res.status(400).json({ success: false, message: "Invalid course id" });
-    }
+      const { courseId } = req.params;
+      let courseObjId;
+      try {
+        courseObjId = new ObjectId(courseId);
+      } catch {
+        return res
+          .status(400)
+          .json({ success: false, message: "Invalid course id" });
+      }
 
-    // Validate completion
-    const lessons = await communityLessonsCollection.find({ courseId: courseObjId }).project({ _id: 1 }).toArray();
-    const lessonIds = lessons.map((l) => l._id.toString());
-    const progress = await communityProgressCollection.findOne({ userId: req.user._id, courseId: courseObjId });
-    const completed = new Set((progress?.completedLessons || []).map((x) => x.toString()));
-    const allLessonsDone = lessonIds.every((id) => completed.has(id));
-
-    // All exams passed
-    const exams = await communityExamsCollection.find({ courseId: courseObjId }).project({ _id: 1 }).toArray();
-    let allExamsPassed = true;
-    for (const ex of exams) {
-      const lastAttempt = await communityExamAttemptsCollection.find({ userId: req.user._id, examId: ex._id })
-        .sort({ createdAt: -1 })
-        .limit(1)
+      // Validate completion
+      const lessons = await communityLessonsCollection
+        .find({ courseId: courseObjId })
+        .project({ _id: 1 })
         .toArray();
-      if (!lastAttempt[0]?.passed) { allExamsPassed = false; break; }
+      const lessonIds = lessons.map((l) => l._id.toString());
+      const progress = await communityProgressCollection.findOne({
+        userId: req.user._id,
+        courseId: courseObjId,
+      });
+      const completed = new Set(
+        (progress?.completedLessons || []).map((x) => x.toString()),
+      );
+      const allLessonsDone = lessonIds.every((id) => completed.has(id));
+
+      // All exams passed
+      const exams = await communityExamsCollection
+        .find({ courseId: courseObjId })
+        .project({ _id: 1 })
+        .toArray();
+      let allExamsPassed = true;
+      for (const ex of exams) {
+        const lastAttempt = await communityExamAttemptsCollection
+          .find({ userId: req.user._id, examId: ex._id })
+          .sort({ createdAt: -1 })
+          .limit(1)
+          .toArray();
+        if (!lastAttempt[0]?.passed) {
+          allExamsPassed = false;
+          break;
+        }
+      }
+
+      if (!allLessonsDone || !allExamsPassed) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Course not completed yet" });
+      }
+
+      // Build beautiful PDF certificate
+      const doc = new PDFDocument({
+        size: "A4",
+        layout: "landscape",
+        margin: 0,
+      });
+      const chunks = [];
+      doc.on("data", (d) => chunks.push(d));
+      const done = new Promise((resolve) => doc.on("end", resolve));
+
+      // Get course details
+      const courseDoc = await communityCoursesCollection.findOne(
+        { _id: courseObjId },
+        {
+          projection: { title: 1, description: 1 },
+        },
+      );
+
+      // Get user details
+      const userName = req.user.name || req.user.number;
+      const userEmail = req.user.email || "";
+
+      // Certificate ID
+      const certificateId = `CERT-${Date.now()}-${req.user._id.toString().slice(-6).toUpperCase()}`;
+      const issueDate = new Date().toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      });
+
+      // Page dimensions (A4 landscape)
+      const pageWidth = 842;
+      const pageHeight = 595;
+
+      // Background decorative elements first
+      doc.save();
+      doc
+        .circle(pageWidth / 2, 80, 40)
+        .fillColor("#eff6ff")
+        .fill();
+      doc.restore();
+
+      // Decorative border
+      doc.save();
+      doc
+        .rect(20, 20, pageWidth - 40, pageHeight - 40)
+        .lineWidth(3)
+        .strokeColor("#1e40af")
+        .stroke();
+      doc.restore();
+
+      doc.save();
+      doc
+        .rect(30, 30, pageWidth - 60, pageHeight - 60)
+        .lineWidth(1)
+        .strokeColor("#3b82f6")
+        .stroke();
+      doc.restore();
+
+      // Top circle decoration
+      doc.save();
+      doc
+        .circle(pageWidth / 2, 80, 35)
+        .lineWidth(2)
+        .strokeColor("#1e40af")
+        .stroke();
+      doc.restore();
+
+      // Header - Certificate Title
+      doc
+        .fontSize(42)
+        .fillColor("#1e40af")
+        .font("Helvetica-Bold")
+        .text("CERTIFICATE", 0, 100, { align: "center" });
+
+      doc
+        .fontSize(28)
+        .fillColor("#3b82f6")
+        .text("OF COMPLETION", 0, 150, { align: "center" });
+
+      // Decorative line
+      doc.save();
+      doc
+        .moveTo(pageWidth / 2 - 150, 190)
+        .lineTo(pageWidth / 2 + 150, 190)
+        .lineWidth(2)
+        .strokeColor("#fbbf24")
+        .stroke();
+      doc.restore();
+
+      // "This is to certify that"
+      doc
+        .fontSize(16)
+        .fillColor("#4b5563")
+        .font("Helvetica")
+        .text("This is to certify that", 0, 220, { align: "center" });
+
+      // User Name (highlighted)
+      doc
+        .fontSize(36)
+        .fillColor("#1e40af")
+        .font("Helvetica-Bold")
+        .text(userName, 0, 250, { align: "center" });
+
+      // Underline for name
+      doc
+        .moveTo(pageWidth / 2 - 200, 295)
+        .lineTo(pageWidth / 2 + 200, 295)
+        .lineWidth(1)
+        .strokeColor("#3b82f6")
+        .stroke();
+
+      // Achievement text
+      doc
+        .fontSize(16)
+        .fillColor("#4b5563")
+        .font("Helvetica")
+        .text("has successfully completed the course", 0, 315, {
+          align: "center",
+        });
+
+      // Course Title (highlighted box)
+      const courseTitleY = 350;
+      doc
+        .roundedRect(pageWidth / 2 - 250, courseTitleY - 10, 500, 50, 5)
+        .fillColor("#eff6ff")
+        .fill();
+
+      doc
+        .fontSize(24)
+        .fillColor("#1e40af")
+        .font("Helvetica-Bold")
+        .text(courseDoc?.title || "Course", 0, courseTitleY + 5, {
+          align: "center",
+          width: pageWidth,
+        });
+
+      // Certificate details section
+      const detailsY = 430;
+      doc.fontSize(12).fillColor("#6b7280").font("Helvetica");
+
+      // Certificate ID
+      doc.text(`Certificate ID: ${certificateId}`, 80, detailsY, {
+        align: "left",
+      });
+
+      // Issue Date
+      doc.text(`Issue Date: ${issueDate}`, pageWidth - 280, detailsY, {
+        align: "left",
+      });
+
+      // Footer decorative line
+      doc
+        .moveTo(80, detailsY + 30)
+        .lineTo(pageWidth - 80, detailsY + 30)
+        .lineWidth(1)
+        .strokeColor("#e5e7eb")
+        .stroke();
+
+      // Platform name and signature area
+      doc
+        .fontSize(14)
+        .fillColor("#1e40af")
+        .font("Helvetica-Bold")
+        .text("FlyBook Learning Platform", 80, detailsY + 50, {
+          align: "left",
+        });
+
+      // Signature line
+      doc
+        .moveTo(pageWidth - 280, detailsY + 70)
+        .lineTo(pageWidth - 80, detailsY + 70)
+        .lineWidth(1)
+        .strokeColor("#9ca3af")
+        .stroke();
+
+      doc
+        .fontSize(10)
+        .fillColor("#6b7280")
+        .font("Helvetica")
+        .text("Authorized Signature", pageWidth - 280, detailsY + 75, {
+          align: "center",
+          width: 200,
+        });
+
+      // Bottom decorative corners
+      doc
+        .circle(60, pageHeight - 60, 20)
+        .fillColor("#fbbf24", 0.2)
+        .fill();
+
+      doc
+        .circle(pageWidth - 60, pageHeight - 60, 20)
+        .fillColor("#3b82f6", 0.2)
+        .fill();
+
+      doc.end();
+      await done;
+      const pdfBuffer = Buffer.concat(chunks);
+
+      // Upload to Cloudinary
+      const fileName = `cert_${req.user._id}_${courseId}_${Date.now()}`;
+      const upload = await uploadBufferToCloudinary(pdfBuffer, fileName);
+      const certificateUrl = upload.secure_url;
+
+      // Save record with URL and details
+      const certificateDoc = {
+        userId: req.user._id,
+        userName: userName,
+        userEmail: userEmail,
+        courseId: courseObjId,
+        courseTitle: courseDoc?.title || "Course",
+        certificateId: certificateId,
+        issuedAt: new Date(),
+        certificateUrl,
+        publicId: upload.public_id,
+      };
+      const certRes =
+        await communityCertificatesCollection.insertOne(certificateDoc);
+      return res.status(201).json({
+        success: true,
+        certificateId: certRes.insertedId,
+        certificateUrl,
+        certificateNumber: certificateId,
+      });
+    } catch (error) {
+      console.error("POST /courses/:courseId/certificate error:", error);
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
     }
-
-    if (!allLessonsDone || !allExamsPassed) {
-      return res.status(400).json({ success: false, message: "Course not completed yet" });
-    }
-
-    // Build beautiful PDF certificate
-const doc = new PDFDocument({ 
-  size: "A4", 
-  layout: "landscape",
-  margin: 0 
-});
-const chunks = [];
-doc.on("data", (d) => chunks.push(d));
-const done = new Promise((resolve) => doc.on("end", resolve));
-
-// Get course details
-const courseDoc = await communityCoursesCollection.findOne({ _id: courseObjId }, { 
-  projection: { title: 1, description: 1 }
-});
-
-// Get user details
-const userName = req.user.name || req.user.number;
-const userEmail = req.user.email || "";
-
-// Certificate ID
-const certificateId = `CERT-${Date.now()}-${req.user._id.toString().slice(-6).toUpperCase()}`;
-const issueDate = new Date().toLocaleDateString('en-US', { 
-  year: 'numeric', 
-  month: 'long', 
-  day: 'numeric' 
-});
-
-// Page dimensions (A4 landscape)
-const pageWidth = 842;
-const pageHeight = 595;
-
-// Background decorative elements first
-doc.save();
-doc.circle(pageWidth / 2, 80, 40)
-   .fillColor('#eff6ff')
-   .fill();
-doc.restore();
-
-// Decorative border
-doc.save();
-doc.rect(20, 20, pageWidth - 40, pageHeight - 40)
-   .lineWidth(3)
-   .strokeColor('#1e40af')
-   .stroke();
-doc.restore();
-
-doc.save();
-doc.rect(30, 30, pageWidth - 60, pageHeight - 60)
-   .lineWidth(1)
-   .strokeColor('#3b82f6')
-   .stroke();
-doc.restore();
-
-// Top circle decoration
-doc.save();
-doc.circle(pageWidth / 2, 80, 35)
-   .lineWidth(2)
-   .strokeColor('#1e40af')
-   .stroke();
-doc.restore();
-
-// Header - Certificate Title
-doc.fontSize(42)
-   .fillColor('#1e40af')
-   .font('Helvetica-Bold')
-   .text('CERTIFICATE', 0, 100, { align: 'center' });
-
-doc.fontSize(28)
-   .fillColor('#3b82f6')
-   .text('OF COMPLETION', 0, 150, { align: 'center' });
-
-// Decorative line
-doc.save();
-doc.moveTo(pageWidth / 2 - 150, 190)
-   .lineTo(pageWidth / 2 + 150, 190)
-   .lineWidth(2)
-   .strokeColor('#fbbf24')
-   .stroke();
-doc.restore();
-
-// "This is to certify that"
-doc.fontSize(16)
-   .fillColor('#4b5563')
-   .font('Helvetica')
-   .text('This is to certify that', 0, 220, { align: 'center' });
-
-// User Name (highlighted)
-doc.fontSize(36)
-   .fillColor('#1e40af')
-   .font('Helvetica-Bold')
-   .text(userName, 0, 250, { align: 'center' });
-
-// Underline for name
-doc.moveTo(pageWidth / 2 - 200, 295)
-   .lineTo(pageWidth / 2 + 200, 295)
-   .lineWidth(1)
-   .strokeColor('#3b82f6')
-   .stroke();
-
-// Achievement text
-doc.fontSize(16)
-   .fillColor('#4b5563')
-   .font('Helvetica')
-   .text('has successfully completed the course', 0, 315, { align: 'center' });
-
-// Course Title (highlighted box)
-const courseTitleY = 350;
-doc.roundedRect(pageWidth / 2 - 250, courseTitleY - 10, 500, 50, 5)
-   .fillColor('#eff6ff')
-   .fill();
-
-doc.fontSize(24)
-   .fillColor('#1e40af')
-   .font('Helvetica-Bold')
-   .text(courseDoc?.title || "Course", 0, courseTitleY + 5, { 
-     align: 'center',
-     width: pageWidth
-   });
-
-// Certificate details section
-const detailsY = 430;
-doc.fontSize(12)
-   .fillColor('#6b7280')
-   .font('Helvetica');
-
-// Certificate ID
-doc.text(`Certificate ID: ${certificateId}`, 80, detailsY, { align: 'left' });
-
-// Issue Date
-doc.text(`Issue Date: ${issueDate}`, pageWidth - 280, detailsY, { align: 'left' });
-
-// Footer decorative line
-doc.moveTo(80, detailsY + 30)
-   .lineTo(pageWidth - 80, detailsY + 30)
-   .lineWidth(1)
-   .strokeColor('#e5e7eb')
-   .stroke();
-
-// Platform name and signature area
-doc.fontSize(14)
-   .fillColor('#1e40af')
-   .font('Helvetica-Bold')
-   .text('FlyBook Learning Platform', 80, detailsY + 50, { align: 'left' });
-
-// Signature line
-doc.moveTo(pageWidth - 280, detailsY + 70)
-   .lineTo(pageWidth - 80, detailsY + 70)
-   .lineWidth(1)
-   .strokeColor('#9ca3af')
-   .stroke();
-
-doc.fontSize(10)
-   .fillColor('#6b7280')
-   .font('Helvetica')
-   .text('Authorized Signature', pageWidth - 280, detailsY + 75, { 
-     align: 'center',
-     width: 200
-   });
-
-// Bottom decorative corners
-doc.circle(60, pageHeight - 60, 20)
-   .fillColor('#fbbf24', 0.2)
-   .fill();
-
-doc.circle(pageWidth - 60, pageHeight - 60, 20)
-   .fillColor('#3b82f6', 0.2)
-   .fill();
-
-doc.end();
-await done;
-const pdfBuffer = Buffer.concat(chunks);
-
-// Upload to Cloudinary
-const fileName = `cert_${req.user._id}_${courseId}_${Date.now()}`;
-const upload = await uploadBufferToCloudinary(pdfBuffer, fileName);
-const certificateUrl = upload.secure_url;
-
-// Save record with URL and details
-const certificateDoc = {
-  userId: req.user._id,
-  userName: userName,
-  userEmail: userEmail,
-  courseId: courseObjId,
-  courseTitle: courseDoc?.title || "Course",
-  certificateId: certificateId,
-  issuedAt: new Date(),
-  certificateUrl,
-  publicId: upload.public_id,
-};
-const certRes = await communityCertificatesCollection.insertOne(certificateDoc);
-return res.status(201).json({ 
-  success: true, 
-  certificateId: certRes.insertedId, 
-  certificateUrl,
-  certificateNumber: certificateId
-});
-  } catch (error) {
-    console.error("POST /courses/:courseId/certificate error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+  },
+);
 
 // Create Community (Main Admin = token owner)
 app.post("/community-create", async (req, res) => {
@@ -2018,7 +2578,7 @@ app.post("/community-create", async (req, res) => {
   console.log("token", token);
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    console.log(decoded)
+    console.log(decoded);
     const user = await usersCollections.findOne({ number: decoded.number });
 
     if (!user) {
@@ -2026,7 +2586,7 @@ app.post("/community-create", async (req, res) => {
     }
     console.log("user", user);
     const { communityData } = req.body;
-    console.log(communityData)
+    console.log(communityData);
     if (!communityData?.name || !communityData?.description) {
       return res
         .status(400)
@@ -2143,7 +2703,7 @@ app.post("/communities/:id/follow", async (req, res) => {
       await communityFollowsCollection.deleteOne({ _id: exists._id });
       await communityCollection.updateOne(
         { _id: communityObjId },
-        { $inc: { membersCount: -1 } }
+        { $inc: { membersCount: -1 } },
       );
       return res.json({ success: true, followed: false });
     }
@@ -2155,7 +2715,7 @@ app.post("/communities/:id/follow", async (req, res) => {
     });
     await communityCollection.updateOne(
       { _id: communityObjId },
-      { $inc: { membersCount: 1 } }
+      { $inc: { membersCount: 1 } },
     );
     return res.json({ success: true, followed: true });
   } catch (error) {
@@ -2181,7 +2741,9 @@ app.get("/communities/:id/follow-status", async (req, res) => {
     try {
       communityObjId = new ObjectId(req.params.id);
     } catch (_) {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
 
     const exists = await communityFollowsCollection.findOne({
@@ -2192,7 +2754,9 @@ app.get("/communities/:id/follow-status", async (req, res) => {
     return res.json({ success: true, followed: !!exists });
   } catch (error) {
     console.error("/communities/:id/follow-status error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -2293,7 +2857,7 @@ app.get("/search", async (req, res) => {
               max_tokens: 150,
               temperature: 0.7,
             }),
-          }
+          },
         );
 
         if (response.ok) {
@@ -2302,13 +2866,16 @@ app.get("/search", async (req, res) => {
             aiResult = data.choices[0].message.content.trim();
           }
         } else {
-          console.error("HF Router API Error:", response.status, await response.text());
+          console.error(
+            "HF Router API Error:",
+            response.status,
+            await response.text(),
+          );
         }
       }
     } catch (error) {
       console.error("HF Router API Error:", error.message);
     }
-
 
     // ✅ Fetch website users
     try {
@@ -2323,7 +2890,7 @@ app.get("/search", async (req, res) => {
               profileImage: 1,
               userName: 1,
             },
-          }
+          },
         )
         .toArray();
       websiteResults.users = users || [];
@@ -2373,7 +2940,7 @@ app.get("/search", async (req, res) => {
     if (GOOGLE_API_KEY && SEARCH_ENGINE_ID) {
       try {
         const googleSearchUrl = `https://www.googleapis.com/customsearch/v1?key=${GOOGLE_API_KEY}&cx=${SEARCH_ENGINE_ID}&q=${encodeURIComponent(
-          searchQuery
+          searchQuery,
         )}&num=5&safe=active`;
 
         const response = await fetch(googleSearchUrl);
@@ -2399,7 +2966,8 @@ app.get("/search", async (req, res) => {
 // User Registration Route
 app.post("/users/register", async (req, res) => {
   try {
-    const { name, email, number, password, userLocation, referrerUsername } = req.body;
+    const { name, email, number, password, userLocation, referrerUsername } =
+      req.body;
     console.log(userLocation);
     // Check if user already exists
     const existingUser = await usersCollections.findOne({ number });
@@ -2429,18 +2997,20 @@ app.post("/users/register", async (req, res) => {
     // Handle referrer if provided
     let referrerId = null;
     let referrerName = null;
-    
+
     if (referrerUsername && referrerUsername.trim() !== "") {
-      const referrer = await usersCollections.findOne({ 
-        userName: referrerUsername.trim() 
+      const referrer = await usersCollections.findOne({
+        userName: referrerUsername.trim(),
       });
-      
+
       if (referrer) {
         referrerId = referrer._id;
         referrerName = referrer.userName;
       } else {
         // Referrer username not found, but continue registration
-        console.log(`Referrer username "${referrerUsername}" not found, continuing without referrer`);
+        console.log(
+          `Referrer username "${referrerUsername}" not found, continuing without referrer`,
+        );
       }
     }
 
@@ -2491,7 +3061,7 @@ app.post("/users/register", async (req, res) => {
 // User Login Route
 app.post("/users/login", async (req, res) => {
   const { number, password } = req.body;
-  
+
   // Input validation
   if (!number || !password) {
     return res
@@ -2502,7 +3072,7 @@ app.post("/users/login", async (req, res) => {
   try {
     // Ensure database connection
     await connectToMongo();
-    
+
     // Check if JWT_SECRET is set
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     if (!jwtSecret) {
@@ -2537,7 +3107,7 @@ app.post("/users/login", async (req, res) => {
       jwtSecret,
       {
         expiresIn: "30d",
-      }
+      },
     );
 
     // Respond with token and basic user info (never password!)
@@ -2556,11 +3126,10 @@ app.post("/users/login", async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Internal server error",
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 });
-
 
 // Get profile information for the logged-in user
 app.get("/profile", async (req, res) => {
@@ -2576,12 +3145,12 @@ app.get("/profile", async (req, res) => {
     } catch (dbError) {
       console.error("Database connection error in /profile:", dbError.message);
       // Return a basic error response instead of crashing
-      return res.status(503).json({ 
+      return res.status(503).json({
         error: "Service temporarily unavailable",
-        message: "Database connection failed. Please try again later."
+        message: "Database connection failed. Please try again later.",
       });
     }
-    
+
     // Check if JWT_SECRET is set
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     if (!jwtSecret) {
@@ -2623,28 +3192,32 @@ app.get("/profile", async (req, res) => {
 
       await usersCollections.updateOne(
         { _id: user._id },
-        { $set: { userName: username } }
+        { $set: { userName: username } },
       );
       user.userName = username; // Update local object for response
     }
 
     res.json({
       id: user._id,
-      name: user.name || '',
-      userName: user.userName || '',
-      email: user.email || '',
-      number: user.number || '',
-      profileImage: user.profileImage || 'https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg',
+      name: user.name || "",
+      userName: user.userName || "",
+      email: user.email || "",
+      number: user.number || "",
+      profileImage:
+        user.profileImage ||
+        "https://i.ibb.co/mcL9L2t/f10ff70a7155e5ab666bcdd1b45b726d.jpg",
       verificationStatus: user.verificationStatus || false,
-      work: user.work || '',
-      studies: user.studies || '',
-      currentCity: user.currentCity || '',
-      hometown: user.hometown || '',
-      coverImage: user.coverImage || 'https://i.ibb.co.com/xmyN9fT/freepik-expand-75906-min.png',
+      work: user.work || "",
+      studies: user.studies || "",
+      currentCity: user.currentCity || "",
+      hometown: user.hometown || "",
+      coverImage:
+        user.coverImage ||
+        "https://i.ibb.co.com/xmyN9fT/freepik-expand-75906-min.png",
       friendRequestsSent: user.friendRequestsSent || [],
       friendRequestsReceived: user.friendRequestsReceived || [],
       friends: user.friends || [],
-      role: user.role || 'user',
+      role: user.role || "user",
       referrerId: user.referrerId || null,
       referrerName: user.referrerName || user.referredBy || null,
       flyWallet: user.flyWallet ?? 0, // Use nullish coalescing to handle 0 correctly
@@ -2652,9 +3225,9 @@ app.get("/profile", async (req, res) => {
     });
   } catch (error) {
     console.error("Error in /profile endpoint:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Internal server error",
-      message: "An unexpected error occurred. Please try again later."
+      message: "An unexpected error occurred. Please try again later.",
     });
   }
 });
@@ -2748,7 +3321,7 @@ app.put("/profile/update", async (req, res) => {
     const { profileImageUrl } = req.body;
     const updatedUser = await usersCollections.updateOne(
       { number: decoded.number },
-      { $set: { profileImage: profileImageUrl } }
+      { $set: { profileImage: profileImageUrl } },
     );
 
     res.json({ message: "Profile updated successfully" });
@@ -2777,7 +3350,7 @@ app.put("/profile/cover/update", async (req, res) => {
     const { coverImageUrl } = req.body;
     const updatedUser = await usersCollections.updateOne(
       { number: decoded.number },
-      { $set: { coverImage: coverImageUrl } }
+      { $set: { coverImage: coverImageUrl } },
     );
 
     res.json({ message: "Cover updated successfully" });
@@ -2807,7 +3380,7 @@ app.put("/profile/verification", async (req, res) => {
     const { verificationStatus } = req.body;
     const updatedUser = await usersCollections.updateOne(
       { number: decoded.number },
-      { $set: { verificationStatus } }
+      { $set: { verificationStatus } },
     );
 
     res.json({ message: "Verification status updated successfully" });
@@ -2837,7 +3410,7 @@ app.put("/profile/updateDetails", async (req, res) => {
 
     const updatedUser = await usersCollections.updateOne(
       { number: decoded.number },
-      { $set: { work, studies, currentCity, hometown, email } }
+      { $set: { work, studies, currentCity, hometown, email } },
     );
 
     res.json({ message: "Profile updated successfully" });
@@ -2854,7 +3427,7 @@ app.post("/api/transfer-coins", async (req, res) => {
   try {
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     const decoded = jwt.verify(token, jwtSecret);
-    
+
     if (!decoded.number) {
       return res.status(400).json({ error: "Invalid token payload" });
     }
@@ -2870,11 +3443,13 @@ app.post("/api/transfer-coins", async (req, res) => {
 
     // Find sender and receiver
     const sender = await usersCollections.findOne({ number: decoded.number });
-    const receiver = await usersCollections.findOne({ userName: receiverUsername });
+    const receiver = await usersCollections.findOne({
+      userName: receiverUsername,
+    });
 
     if (!sender) return res.status(404).json({ error: "Sender not found" });
     if (!receiver) return res.status(404).json({ error: "Receiver not found" });
-    
+
     if (sender.userName === receiverUsername) {
       return res.status(400).json({ error: "Cannot transfer to yourself" });
     }
@@ -2887,17 +3462,19 @@ app.post("/api/transfer-coins", async (req, res) => {
     // Deduct from sender
     const deductResult = await usersCollections.updateOne(
       { _id: sender._id, wallet: { $gte: transferAmount } },
-      { $inc: { wallet: -transferAmount } }
+      { $inc: { wallet: -transferAmount } },
     );
 
     if (deductResult.modifiedCount === 0) {
-      return res.status(400).json({ error: "Transfer failed: Insufficient balance or concurrency issue" });
+      return res.status(400).json({
+        error: "Transfer failed: Insufficient balance or concurrency issue",
+      });
     }
 
     // Add to receiver
     await usersCollections.updateOne(
       { _id: receiver._id },
-      { $inc: { wallet: transferAmount } }
+      { $inc: { wallet: transferAmount } },
     );
 
     // Log transaction
@@ -2909,26 +3486,25 @@ app.post("/api/transfer-coins", async (req, res) => {
       receiverName: receiver.name,
       receiverUsername: receiver.userName,
       amount: transferAmount,
-      date: new Date().toLocaleDateString('en-GB'),
-      time: new Date().toLocaleTimeString('en-US', { hour12: true }),
-      timestamp: new Date()
+      date: new Date().toLocaleDateString("en-GB"),
+      time: new Date().toLocaleTimeString("en-US", { hour12: true }),
+      timestamp: new Date(),
     };
 
     await coinTransferCollections.insertOne(transactionRecord);
 
     // Emit socket updates for real-time balance refresh
-    const io = req.app.get('io') || global.io;
+    const io = req.app.get("io") || global.io;
     if (io) {
       io.emit("walletUpdated", { userId: sender._id });
       io.emit("walletUpdated", { userId: receiver._id });
     }
 
-    res.json({ 
-      success: true, 
-      message: "Transfer successful", 
-      newBalance: (sender.wallet || 0) - transferAmount 
+    res.json({
+      success: true,
+      message: "Transfer successful",
+      newBalance: (sender.wallet || 0) - transferAmount,
     });
-
   } catch (error) {
     console.error("Transfer error:", error);
     res.status(500).json({ error: "Transfer failed. Please try again." });
@@ -2943,22 +3519,22 @@ app.get("/api/transfer-history", async (req, res) => {
   try {
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     const decoded = jwt.verify(token, jwtSecret);
-    
+
     if (!decoded.number) {
       return res.status(400).json({ error: "Invalid token payload" });
     }
 
     await connectToMongo();
-    
+
     const user = await usersCollections.findOne({ number: decoded.number });
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const history = await coinTransferCollections.find({
-      $or: [
-        { senderId: user._id },
-        { receiverId: user._id }
-      ]
-    }).sort({ timestamp: -1 }).toArray();
+    const history = await coinTransferCollections
+      .find({
+        $or: [{ senderId: user._id }, { receiverId: user._id }],
+      })
+      .sort({ timestamp: -1 })
+      .toArray();
 
     res.json({ success: true, data: history });
   } catch (error) {
@@ -2975,18 +3551,21 @@ app.get("/api/admin/all-coin-transfers", async (req, res) => {
   try {
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     const decoded = jwt.verify(token, jwtSecret);
-    
+
     await connectToMongo();
-    
+
     // Check if user is an admin or has permissions
     // Note: Following existing patterns where token validity is often the primary check for admin routes
     // but ideally we verify the user role from DB
-    const adminUser = await usersCollections.findOne({ number: decoded.number });
+    const adminUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
     // In this codebase, admins don't seem to have a strict 'admin' role field in all places,
     // but we can add a check if needed. For now, since it's an admin-only intended route,
     // we fetch all records.
-    
-    const allHistory = await coinTransferCollections.find({})
+
+    const allHistory = await coinTransferCollections
+      .find({})
       .sort({ timestamp: -1 })
       .toArray();
 
@@ -3049,7 +3628,7 @@ app.post("/wallet/add-coins", async (req, res) => {
 
   try {
     await connectToMongo();
-    
+
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     if (!jwtSecret) {
       return res.status(500).json({ error: "Server configuration error" });
@@ -3067,17 +3646,21 @@ app.post("/wallet/add-coins", async (req, res) => {
     }
 
     const { minutes } = req.body;
-    
-    console.log(`💰 Coin add request: ${minutes} minute(s) from user ${decoded.number}`);
-    
+
+    console.log(
+      `💰 Coin add request: ${minutes} minute(s) from user ${decoded.number}`,
+    );
+
     if (!minutes || minutes <= 0) {
       console.error("❌ Invalid minutes value:", minutes);
       return res.status(400).json({ error: "Invalid minutes value." });
     }
 
-    // Calculate coins: 60 coins per minute
-    const coinsToAdd = Math.floor(minutes * 100);
-    console.log(`💰 Calculating: ${minutes} minute(s) × 100 = ${coinsToAdd} coins`);
+    // Calculate points: 1.6 points per minute
+    const coinsToAdd = parseFloat((minutes * 1.6).toFixed(2));
+    console.log(
+      `💰 Calculating: ${minutes} minute(s) × 1.6 = ${coinsToAdd} points`,
+    );
 
     // Get current user
     const user = await usersCollections.findOne({ number: decoded.number });
@@ -3090,14 +3673,16 @@ app.post("/wallet/add-coins", async (req, res) => {
     const currentBalance = user.flyWallet || 0;
     const newBalance = currentBalance + coinsToAdd;
 
-    console.log(`💰 Wallet update: ${currentBalance} + ${coinsToAdd} = ${newBalance}`);
+    console.log(
+      `💰 Wallet update: ${currentBalance} + ${coinsToAdd} = ${newBalance}`,
+    );
 
     const result = await usersCollections.updateOne(
       { number: decoded.number },
-      { 
+      {
         $set: { flyWallet: newBalance },
-        $inc: { totalBrowsingMinutes: minutes }
-      }
+        $inc: { totalBrowsingMinutes: minutes },
+      },
     );
 
     if (result.matchedCount === 0) {
@@ -3125,9 +3710,9 @@ app.post("/wallet/add-coins", async (req, res) => {
     });
   } catch (error) {
     console.error("Error adding coins:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Internal server error",
-      message: "Failed to add coins."
+      message: "Failed to add coins.",
     });
   }
 });
@@ -3142,7 +3727,7 @@ app.put("/wallet/update", async (req, res) => {
 
   try {
     await connectToMongo();
-    
+
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     if (!jwtSecret) {
       return res.status(500).json({ error: "Server configuration error" });
@@ -3160,9 +3745,11 @@ app.put("/wallet/update", async (req, res) => {
     }
 
     const { flyWallet, wallet } = req.body;
-    
+
     if (flyWallet === undefined && wallet === undefined) {
-      return res.status(400).json({ error: "At least one wallet field is required." });
+      return res
+        .status(400)
+        .json({ error: "At least one wallet field is required." });
     }
 
     const updateFields = {};
@@ -3175,14 +3762,16 @@ app.put("/wallet/update", async (req, res) => {
 
     const result = await usersCollections.updateOne(
       { number: decoded.number },
-      { $set: updateFields }
+      { $set: updateFields },
     );
 
     if (result.matchedCount === 0) {
       return res.status(404).json({ error: "User not found." });
     }
 
-    const updatedUser = await usersCollections.findOne({ number: decoded.number });
+    const updatedUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
 
     res.json({
       success: true,
@@ -3192,14 +3781,12 @@ app.put("/wallet/update", async (req, res) => {
     });
   } catch (error) {
     console.error("Error updating wallet:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Internal server error",
-      message: "Failed to update wallet."
+      message: "Failed to update wallet.",
     });
   }
 });
-
-
 
 // Admin: Update any user's wallet
 app.put("/admin/wallet/update-user", async (req, res) => {
@@ -3211,7 +3798,7 @@ app.put("/admin/wallet/update-user", async (req, res) => {
 
   try {
     await connectToMongo();
-  
+
     // For now, we rely on the token validity
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     if (!jwtSecret) {
@@ -3225,7 +3812,7 @@ app.put("/admin/wallet/update-user", async (req, res) => {
     }
 
     const { userId, flyWallet, wallet } = req.body;
-    
+
     if (!userId) {
       return res.status(400).json({ error: "User ID is required." });
     }
@@ -3244,7 +3831,7 @@ app.put("/admin/wallet/update-user", async (req, res) => {
 
     const result = await usersCollections.updateOne(
       { _id: new ObjectId(userId) },
-      { $set: updateFields }
+      { $set: updateFields },
     );
 
     if (result.matchedCount === 0) {
@@ -3254,14 +3841,13 @@ app.put("/admin/wallet/update-user", async (req, res) => {
     res.json({
       success: true,
       message: "User wallet updated successfully",
-      updatedFields: updateFields
+      updatedFields: updateFields,
     });
-
   } catch (error) {
     console.error("Error updating user wallet:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Internal server error",
-      message: "Failed to update user wallet."
+      message: "Failed to update user wallet.",
     });
   }
 });
@@ -3276,7 +3862,7 @@ app.get("/users/referred", async (req, res) => {
 
   try {
     await connectToMongo();
-    
+
     const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
     if (!jwtSecret) {
       return res.status(500).json({ error: "Server configuration error" });
@@ -3293,15 +3879,17 @@ app.get("/users/referred", async (req, res) => {
       return res.status(400).json({ error: "Invalid token payload." });
     }
 
-    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
     if (!currentUser) {
       return res.status(404).json({ error: "User not found." });
     }
 
     // Find all users who were referred by this user
     const referredUsers = await usersCollections
-      .find({ 
-        referrerId: currentUser._id 
+      .find({
+        referrerId: currentUser._id,
       })
       .project({
         _id: 1,
@@ -3320,9 +3908,9 @@ app.get("/users/referred", async (req, res) => {
     });
   } catch (error) {
     console.error("Error fetching referred users:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Internal server error",
-      message: "Failed to fetch referred users."
+      message: "Failed to fetch referred users.",
     });
   }
 });
@@ -3337,10 +3925,10 @@ app.get("/admin/referrals/history", async (req, res) => {
 
   try {
     await connectToMongo();
-    
+
     const decoded = jwt.verify(token, JWT_SECRET);
     const admin = await usersCollections.findOne({ number: decoded.number });
-    
+
     if (!admin || admin.role !== "admin") {
       return res.status(403).json({ error: "Access denied. Admin only." });
     }
@@ -3355,8 +3943,8 @@ app.get("/admin/referrals/history", async (req, res) => {
         $or: [
           { name: { $regex: search, $options: "i" } },
           { userName: { $regex: search, $options: "i" } },
-          { email: { $regex: search, $options: "i" } }
-        ]
+          { email: { $regex: search, $options: "i" } },
+        ],
       };
     }
 
@@ -3372,7 +3960,7 @@ app.get("/admin/referrals/history", async (req, res) => {
         referrerId: 1,
         referrerName: 1,
         createdAt: 1,
-        verificationStatus: 1
+        verificationStatus: 1,
       })
       .sort({ createdAt: -1 })
       .skip(skip)
@@ -3384,7 +3972,7 @@ app.get("/admin/referrals/history", async (req, res) => {
       allUsers.map(async (user) => {
         // Count how many users this user has referred
         const referralCount = await usersCollections.countDocuments({
-          referrerId: user._id
+          referrerId: user._id,
         });
 
         // Get referrer details if exists
@@ -3392,7 +3980,7 @@ app.get("/admin/referrals/history", async (req, res) => {
         if (user.referrerId) {
           referrerDetails = await usersCollections.findOne(
             { _id: user.referrerId },
-            { projection: { name: 1, userName: 1, profileImage: 1 } }
+            { projection: { name: 1, userName: 1, profileImage: 1 } },
           );
         }
 
@@ -3404,7 +3992,7 @@ app.get("/admin/referrals/history", async (req, res) => {
             name: 1,
             userName: 1,
             profileImage: 1,
-            createdAt: 1
+            createdAt: 1,
           })
           .sort({ createdAt: -1 })
           .limit(10)
@@ -3416,62 +4004,66 @@ app.get("/admin/referrals/history", async (req, res) => {
           referrerDetails,
           referredUsers,
           hasReferrer: !!user.referrerId,
-          hasReferrals: referralCount > 0
+          hasReferrals: referralCount > 0,
         };
-      })
+      }),
     );
 
-    console.log(`📊 Admin Referral Query: Found ${usersWithReferralData.length} users`);
+    console.log(
+      `📊 Admin Referral Query: Found ${usersWithReferralData.length} users`,
+    );
     console.log(`📊 Sample user data:`, usersWithReferralData[0]);
 
     // Calculate overall statistics
     const totalUsers = await usersCollections.countDocuments(searchQuery);
     const usersWithReferrer = await usersCollections.countDocuments({
       ...searchQuery,
-      referrerId: { $exists: true, $ne: null }
+      referrerId: { $exists: true, $ne: null },
     });
 
     // Get top referrers
-    const topReferrers = await usersCollections.aggregate([
-      {
-        $lookup: {
-          from: "usersCollections",
-          localField: "_id",
-          foreignField: "referrerId",
-          as: "referrals"
-        }
-      },
-      {
-        $addFields: {
-          referralCount: { $size: "$referrals" }
-        }
-      },
-      {
-        $match: {
-          referralCount: { $gt: 0 }
-        }
-      },
-      {
-        $sort: { referralCount: -1 }
-      },
-      {
-        $limit: 10
-      },
-      {
-        $project: {
-          _id: 1,
-          name: 1,
-          userName: 1,
-          profileImage: 1,
-          referralCount: 1
-        }
-      }
-    ]).toArray();
+    const topReferrers = await usersCollections
+      .aggregate([
+        {
+          $lookup: {
+            from: "usersCollections",
+            localField: "_id",
+            foreignField: "referrerId",
+            as: "referrals",
+          },
+        },
+        {
+          $addFields: {
+            referralCount: { $size: "$referrals" },
+          },
+        },
+        {
+          $match: {
+            referralCount: { $gt: 0 },
+          },
+        },
+        {
+          $sort: { referralCount: -1 },
+        },
+        {
+          $limit: 10,
+        },
+        {
+          $project: {
+            _id: 1,
+            name: 1,
+            userName: 1,
+            profileImage: 1,
+            referralCount: 1,
+          },
+        },
+      ])
+      .toArray();
 
     // Get recent referrals (last 10)
     const recentReferrals = await usersCollections
       .find({
-        referrerId: { $exists: true, $ne: null }
+        referrerId: { $exists: true, $ne: null },
       })
       .project({
         _id: 1,
@@ -3480,7 +4072,7 @@ app.get("/admin/referrals/history", async (req, res) => {
         profileImage: 1,
         referrerId: 1,
         referrerName: 1,
-        createdAt: 1
+        createdAt: 1,
       })
       .sort({ createdAt: -1 })
       .limit(10)
@@ -3491,13 +4083,13 @@ app.get("/admin/referrals/history", async (req, res) => {
       recentReferrals.map(async (referral) => {
         const referrerDetails = await usersCollections.findOne(
           { _id: referral.referrerId },
-          { projection: { name: 1, userName: 1, profileImage: 1 } }
+          { projection: { name: 1, userName: 1, profileImage: 1 } },
         );
         return {
           ...referral,
-          referrerDetails
+          referrerDetails,
         };
-      })
+      }),
     );
 
     res.json({
@@ -3507,21 +4099,24 @@ app.get("/admin/referrals/history", async (req, res) => {
         currentPage: parseInt(page),
         totalPages: Math.ceil(totalUsers / limit),
         totalUsers,
-        limit: parseInt(limit)
+        limit: parseInt(limit),
       },
       statistics: {
         totalUsers,
         usersWithReferrer,
-        referralPercentage: totalUsers > 0 ? ((usersWithReferrer / totalUsers) * 100).toFixed(2) : 0,
+        referralPercentage:
+          totalUsers > 0
+            ? ((usersWithReferrer / totalUsers) * 100).toFixed(2)
+            : 0,
         topReferrers,
-        recentReferrals: enrichedRecentReferrals
-      }
+        recentReferrals: enrichedRecentReferrals,
+      },
     });
   } catch (error) {
     console.error("Error fetching admin referral history:", error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: "Internal server error",
-      message: "Failed to fetch referral history."
+      message: "Failed to fetch referral history.",
     });
   }
 });
@@ -3556,7 +4151,7 @@ app.put("/profile/updateDetails/location", async (req, res) => {
             ],
           },
         },
-      }
+      },
     );
 
     res.json({ message: "Profile updated successfully" });
@@ -3612,7 +4207,7 @@ app.post("/reset-password/:id/:token", async (req, res) => {
     // Update the user's password in the database
     const result = await usersCollections.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { password: hashedPassword } }
+      { $set: { password: hashedPassword } },
     );
 
     if (result.modifiedCount === 0) {
@@ -3647,12 +4242,12 @@ app.get("/peoples", async (req, res) => {
     const result = await usersCollections
       .find(
         { number: { $ne: decoded.number } }, // Filter users excluding the logged-in user's number
-        { projection: { password: 0 } } // Exclude the password field
+        { projection: { password: 0 } }, // Exclude the password field
       )
       .toArray();
-    
+
     // Include isOnline and lastSeen in the result
-    const usersWithStatus = result.map(user => ({
+    const usersWithStatus = result.map((user) => ({
       ...user,
       isOnline: user.isOnline || false,
       lastSeen: user.lastSeen || null,
@@ -3710,11 +4305,11 @@ app.post("/friend-request/send", async (req, res) => {
     // Update both users
     await usersCollections.updateOne(
       { _id: new ObjectId(recipientId) },
-      { $push: { friendRequestsReceived: sender._id } }
+      { $push: { friendRequestsReceived: sender._id } },
     );
     await usersCollections.updateOne(
       { number: sender.number },
-      { $push: { friendRequestsSent: new ObjectId(recipientId) } }
+      { $push: { friendRequestsSent: new ObjectId(recipientId) } },
     );
 
     res.json({ message: "Friend request sent successfully." });
@@ -3792,13 +4387,13 @@ app.post("/friend-request/accept", async (req, res) => {
 
     console.log(
       "Recipient's friendRequestsReceived:",
-      recipient.friendRequestsReceived
+      recipient.friendRequestsReceived,
     );
     console.log("Sender ID:", sender._id);
 
     // Ensure the friend request exists
     const friendRequestExists = recipient.friendRequestsReceived?.some(
-      (reqId) => reqId.toString() === sender._id.toString()
+      (reqId) => reqId.toString() === sender._id.toString(),
     );
 
     if (!friendRequestExists) {
@@ -3813,7 +4408,7 @@ app.post("/friend-request/accept", async (req, res) => {
       {
         $pull: { friendRequestsReceived: new ObjectId(sender._id) },
         $push: { friends: new ObjectId(sender._id) },
-      }
+      },
     );
 
     // Update sender: Remove request and add to friends
@@ -3822,7 +4417,7 @@ app.post("/friend-request/accept", async (req, res) => {
       {
         $pull: { friendRequestsSent: new ObjectId(recipient._id) },
         $push: { friends: new ObjectId(recipient._id) },
-      }
+      },
     );
 
     res.json({ message: "Friend request accepted successfully." });
@@ -3847,12 +4442,12 @@ app.post("/friend-request/reject", async (req, res) => {
 
     await usersCollections.updateOne(
       { number: decoded.number },
-      { $pull: { friendRequestsReceived: new ObjectId(senderId) } }
+      { $pull: { friendRequestsReceived: new ObjectId(senderId) } },
     );
 
     await usersCollections.updateOne(
       { _id: new ObjectId(senderId) },
-      { $pull: { friendRequestsSent: new ObjectId(recipient._id) } }
+      { $pull: { friendRequestsSent: new ObjectId(recipient._id) } },
     );
 
     res.json({ message: "Friend request rejected successfully." });
@@ -3878,12 +4473,12 @@ app.post("/friend-request/cancel", async (req, res) => {
 
     await usersCollections.updateOne(
       { number: decoded.number },
-      { $pull: { friendRequestsSent: new ObjectId(recipientId) } }
+      { $pull: { friendRequestsSent: new ObjectId(recipientId) } },
     );
 
     await usersCollections.updateOne(
       { _id: new ObjectId(recipientId) },
-      { $pull: { friendRequestsReceived: new ObjectId(sender._id) } }
+      { $pull: { friendRequestsReceived: new ObjectId(sender._id) } },
     );
 
     res.json({ message: "Friend request canceled successfully." });
@@ -3944,10 +4539,13 @@ app.get("/all-friends", async (req, res) => {
     try {
       await connectToMongo();
     } catch (dbError) {
-      console.error("Database connection error in /all-friends:", dbError.message);
-      return res.status(503).json({ 
+      console.error(
+        "Database connection error in /all-friends:",
+        dbError.message,
+      );
+      return res.status(503).json({
         error: "Service temporarily unavailable",
-        message: "Database connection failed. Please try again later."
+        message: "Database connection failed. Please try again later.",
       });
     }
 
@@ -3975,11 +4573,11 @@ app.get("/all-friends", async (req, res) => {
 
     const friends = await usersCollections
       .find({
-        _id: { $in: friendsIds.map(id => new ObjectId(id)) },
+        _id: { $in: friendsIds.map((id) => new ObjectId(id)) },
       })
       .project({ password: 0 }) // Exclude password only (MongoDB doesn't allow mixing inclusion/exclusion)
       .toArray();
-    
+
     // Add isOnline and lastSeen to each friend (these fields should already exist in the document)
     // No need to explicitly project them - they'll be included by default when we exclude password
 
@@ -4020,13 +4618,13 @@ app.post("/friend-request/unfriend", async (req, res) => {
     // Update user's friend list
     await usersCollections.updateOne(
       { _id: new ObjectId(user._id) },
-      { $pull: { friends: new ObjectId(friendId) } }
+      { $pull: { friends: new ObjectId(friendId) } },
     );
 
     // Update friend's friend list
     await usersCollections.updateOne(
       { _id: new ObjectId(friend._id) },
-      { $pull: { friends: new ObjectId(user._id) } }
+      { $pull: { friends: new ObjectId(user._id) } },
     );
 
     res.status(200).json({ message: "Unfriended successfully." });
@@ -4072,9 +4670,9 @@ app.post("/opinion/post", async (req, res) => {
 
 app.get("/opinion/posts", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-  console.log("post token",token)
+  console.log("post token", token);
   if (!token) {
-    console.log("dbcjsdcnvs.")
+    console.log("dbcjsdcnvs.");
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
@@ -4145,13 +4743,13 @@ app.post("/opinion/like", async (req, res) => {
     if (typeof post.likes !== "number") {
       await opinionCollections.updateOne(
         { _id: new ObjectId(postId) },
-        { $set: { likes: parseInt(post.likes) || 0 } }
+        { $set: { likes: parseInt(post.likes) || 0 } },
       );
     }
     console.log(user._id);
     const updatedPost = await opinionCollections.updateOne(
       { _id: new ObjectId(postId) },
-      { $inc: { likes: 1 }, $push: { likedBy: user._id } }
+      { $inc: { likes: 1 }, $push: { likedBy: user._id } },
     );
 
     if (updatedPost.modifiedCount === 0) {
@@ -4194,7 +4792,7 @@ app.post("/opinion/unlike", async (req, res) => {
 
     const updatedPost = await opinionCollections.updateOne(
       { _id: new ObjectId(postId) },
-      { $inc: { likes: -1 }, $pull: { likedBy: new ObjectId(user._id) } }
+      { $inc: { likes: -1 }, $pull: { likedBy: new ObjectId(user._id) } },
     );
 
     if (updatedPost.modifiedCount === 0) {
@@ -4292,16 +4890,20 @@ app.delete("/books/delete/:bookId", async (req, res) => {
     // Check if the book exists and get book details
     const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
     if (!book) {
-      return res.status(404).json({ success: false, message: "Book not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Book not found." });
     }
 
     // Check if current user is the original owner (who added the book)
-    const isOriginalOwner = book.userId?.toString() === currentUser._id.toString();
+    const isOriginalOwner =
+      book.userId?.toString() === currentUser._id.toString();
 
     if (!isOriginalOwner) {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Only the original owner who added this book can delete it. Transferred books cannot be deleted by the current holder." 
+      return res.status(403).json({
+        success: false,
+        message:
+          "Only the original owner who added this book can delete it. Transferred books cannot be deleted by the current holder.",
       });
     }
 
@@ -4375,7 +4977,7 @@ app.post("/books/request", async (req, res) => {
           requestBy: currentUser._id,
           requestName: currentUser.name,
         },
-      }
+      },
     );
 
     if (updateResult.modifiedCount === 0) {
@@ -4438,7 +5040,7 @@ app.post("/books/request/cancel", async (req, res) => {
       { _id: new ObjectId(bookId) },
       {
         $set: { transfer: "no request", requestBy: "", requestName: "" },
-      }
+      },
     );
 
     if (updateResult.modifiedCount === 0) {
@@ -4500,7 +5102,7 @@ app.post("/books/request/accept", async (req, res) => {
       { _id: new ObjectId(bookId) },
       {
         $set: { transfer: "accept" },
-      }
+      },
     );
 
     if (updateResult.modifiedCount === 0) {
@@ -4575,7 +5177,7 @@ app.post("/books/request/trans", async (req, res) => {
       { _id: new ObjectId(bookId) },
       {
         $set: { transfer: "success", transferTo: requestBy },
-      }
+      },
     );
     if (updateResult.modifiedCount > 0) {
       await bookTransCollections.insertOne(transHistory);
@@ -4676,7 +5278,7 @@ app.post("/books/return", async (req, res) => {
           requestBy: "",
           requestName: "",
         },
-      }
+      },
     );
     if (updateResult.modifiedCount > 0) {
       await bookTransCollections.insertOne(transHistory);
@@ -4780,18 +5382,24 @@ app.delete("/onindo/delete/:bookId", async (req, res) => {
     }
 
     // Check if the book exists and get book details
-    const book = await onindoBookCollections.findOne({ _id: new ObjectId(bookId) });
+    const book = await onindoBookCollections.findOne({
+      _id: new ObjectId(bookId),
+    });
     if (!book) {
-      return res.status(404).json({ success: false, message: "Book not found." });
+      return res
+        .status(404)
+        .json({ success: false, message: "Book not found." });
     }
 
     // Check if current user is the original owner (who added the book)
-    const isOriginalOwner = book.userId?.toString() === currentUser._id.toString();
+    const isOriginalOwner =
+      book.userId?.toString() === currentUser._id.toString();
 
     if (!isOriginalOwner) {
-      return res.status(403).json({ 
-        success: false, 
-        message: "Only the original owner who added this book can delete it. Transferred books cannot be deleted by the current holder." 
+      return res.status(403).json({
+        success: false,
+        message:
+          "Only the original owner who added this book can delete it. Transferred books cannot be deleted by the current holder.",
       });
     }
 
@@ -4866,7 +5474,7 @@ app.post("/onindo/books/request", async (req, res) => {
           requestBy: currentUser._id,
           requestName: currentUser.name,
         },
-      }
+      },
     );
 
     if (updateResult.modifiedCount === 0) {
@@ -4931,7 +5539,7 @@ app.post("/onindo/books/request/cancel", async (req, res) => {
       { _id: new ObjectId(bookId) },
       {
         $set: { requestBy: "", requestName: "" },
-      }
+      },
     );
 
     if (updateResult.modifiedCount === 0) {
@@ -5012,7 +5620,7 @@ app.post("/onindo/books/request/trans", async (req, res) => {
           requestBy: "",
           requestName: "",
         },
-      }
+      },
     );
     if (updateResult.modifiedCount > 0) {
       await bookTransCollections.insertOne(transHistory);
@@ -5157,14 +5765,18 @@ app.delete("/opinion/delete/:postId", async (req, res) => {
     }
 
     // Find the post to check ownership
-    const post = await opinionCollections.findOne({ _id: new ObjectId(postId) });
+    const post = await opinionCollections.findOne({
+      _id: new ObjectId(postId),
+    });
     if (!post) {
       return res.status(404).json({ error: "Post not found." });
     }
 
     // Check if the current user is the author
     if (post.userId?.toString() !== currentUser._id.toString()) {
-      return res.status(403).json({ error: "You can only delete your own posts." });
+      return res
+        .status(403)
+        .json({ error: "You can only delete your own posts." });
     }
 
     const result = await opinionCollections.deleteOne({
@@ -5178,7 +5790,9 @@ app.delete("/opinion/delete/:postId", async (req, res) => {
     });
   } catch (error) {
     console.error("Error deleting opinion post:", error);
-    res.status(500).json({ error: "An error occurred while deleting the post." });
+    res
+      .status(500)
+      .json({ error: "An error occurred while deleting the post." });
   }
 });
 
@@ -5201,18 +5815,22 @@ app.put("/opinion/edit/:postId", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
 
-    const post = await opinionCollections.findOne({ _id: new ObjectId(postId) });
+    const post = await opinionCollections.findOne({
+      _id: new ObjectId(postId),
+    });
     if (!post) {
       return res.status(404).json({ error: "Post not found." });
     }
 
     if (post.userId?.toString() !== currentUser._id.toString()) {
-      return res.status(403).json({ error: "You can only edit your own posts." });
+      return res
+        .status(403)
+        .json({ error: "You can only edit your own posts." });
     }
 
     const result = await opinionCollections.updateOne(
       { _id: new ObjectId(postId) },
-      { $set: { description: description } }
+      { $set: { description: description } },
     );
 
     res.send({
@@ -5222,7 +5840,9 @@ app.put("/opinion/edit/:postId", async (req, res) => {
     });
   } catch (error) {
     console.error("Error editing opinion post:", error);
-    res.status(500).json({ error: "An error occurred while updating the post." });
+    res
+      .status(500)
+      .json({ error: "An error occurred while updating the post." });
   }
 });
 
@@ -5247,7 +5867,7 @@ app.post("/admin/post", async (req, res) => {
         .json({ error: "Access denied. You are not an admin." });
     }
     const result = await adminPostCollections.insertOne(postData);
-    
+
     res.send({
       success: true,
       message: "posted successfully",
@@ -5411,7 +6031,7 @@ app.put("/admin/post-ai/:id", async (req, res) => {
 
     const result = await adminAiPostCollections.updateOne(
       { _id: new ObjectId(id) },
-      { $set: postData }
+      { $set: postData },
     );
 
     if (result.matchedCount === 0) {
@@ -5429,10 +6049,10 @@ app.put("/admin/post-ai/:id", async (req, res) => {
 app.get("/all-home-books", async (req, res) => {
   try {
     // Set timeout for the entire request (5 seconds)
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error("Request timeout")), 5000)
+    const timeoutPromise = new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("Request timeout")), 5000),
     );
-    
+
     const queryPromise = (async () => {
       // Ensure database connection with timeout
       try {
@@ -5441,12 +6061,12 @@ app.get("/all-home-books", async (req, res) => {
         console.error("Database connection failed:", dbError.message);
         return []; // Return empty array if connection fails
       }
-      
+
       // Verify collections are accessible
       if (!adminPostCollections) {
         return [];
       }
-      
+
       const { category } = req.query;
       let query = {};
 
@@ -5477,19 +6097,21 @@ app.get("/all-home-books", async (req, res) => {
             likes: 1,
             likedBy: 1,
             createdAt: 1,
-          }
+          },
         })
         .sort({ createdAt: -1 })
         .limit(50)
         .maxTimeMS(5000) // 5 second query timeout
         .toArray();
-      
+
       // Map backend field names to frontend expected field names
       return posts.map((post) => {
-        const textContent = post.postText || post.message || post.content || post.text || '';
-        const imageUrl = post.postImage || post.image || post.imageUrl || post.photo || '';
-        const postTitle = post.title || post.heading || 'Untitled';
-        
+        const textContent =
+          post.postText || post.message || post.content || post.text || "";
+        const imageUrl =
+          post.postImage || post.image || post.imageUrl || post.photo || "";
+        const postTitle = post.title || post.heading || "Untitled";
+
         return {
           _id: post._id,
           message: textContent,
@@ -5508,10 +6130,10 @@ app.get("/all-home-books", async (req, res) => {
         };
       });
     })();
-    
+
     // Race between query and timeout
     const mappedPosts = await Promise.race([queryPromise, timeoutPromise]);
-    
+
     res.json(mappedPosts || []);
   } catch (error) {
     console.error("Error fetching posts:", error.message || error);
@@ -5559,13 +6181,13 @@ app.post("/admin-post/like", async (req, res) => {
     if (typeof post.likes !== "number") {
       await opinionCollections.updateOne(
         { _id: new ObjectId(postId) },
-        { $set: { likes: parseInt(post.likes) || 0 } }
+        { $set: { likes: parseInt(post.likes) || 0 } },
       );
     }
 
     const updatedPost = await adminPostCollections.updateOne(
       { _id: new ObjectId(postId) },
-      { $inc: { likes: 1 }, $push: { likedBy: user._id } }
+      { $inc: { likes: 1 }, $push: { likedBy: user._id } },
     );
 
     if (updatedPost.modifiedCount === 0) {
@@ -5617,7 +6239,7 @@ app.post("/admin-post/comment", async (req, res) => {
 
     const result = await adminPostCollections.updateOne(
       { _id: postObjectId },
-      { $push: { comments: { $each: [commentObj], $position: 0 } } } // add to top
+      { $push: { comments: { $each: [commentObj], $position: 0 } } }, // add to top
     );
 
     if (result.modifiedCount === 0) {
@@ -5662,7 +6284,7 @@ app.post("/admin-post/unlike", async (req, res) => {
 
     const updatedPost = await adminPostCollections.updateOne(
       { _id: new ObjectId(postId) },
-      { $inc: { likes: -1 }, $pull: { likedBy: new ObjectId(user._id) } }
+      { $inc: { likes: -1 }, $pull: { likedBy: new ObjectId(user._id) } },
     );
 
     if (updatedPost.modifiedCount === 0) {
@@ -5832,7 +6454,7 @@ app.get("/api/chat-users", async (req, res) => {
             if (userId) ids.push(userId);
           }
           return ids;
-        }, [])
+        }, []),
       ),
     ];
 
@@ -5895,7 +6517,7 @@ app.get("/api/chat-users", async (req, res) => {
             sender: null,
           };
         }
-      })
+      }),
     );
 
     res.json({ success: true, users: chatUsersWithLastMessage });
@@ -6036,16 +6658,16 @@ app.put("/api/notifications/mark-read", async (req, res) => {
       // Mark specific notifications as read
       await notifyCollections.updateMany(
         {
-          _id: { $in: notificationIds.map(id => new ObjectId(id)) },
+          _id: { $in: notificationIds.map((id) => new ObjectId(id)) },
           receoientId: new ObjectId(userId),
         },
-        { $set: { isRead: true, readAt: new Date() } }
+        { $set: { isRead: true, readAt: new Date() } },
       );
     } else {
       // Mark all notifications as read for the user
       await notifyCollections.updateMany(
         { receoientId: new ObjectId(userId), isRead: false },
-        { $set: { isRead: true, readAt: new Date() } }
+        { $set: { isRead: true, readAt: new Date() } },
       );
     }
 
@@ -6115,7 +6737,7 @@ app.put("/api/messages/mark-read", async (req, res) => {
         senderId: new ObjectId(senderId),
         isRead: false,
       },
-      { $set: { isRead: true, readAt: new Date() } }
+      { $set: { isRead: true, readAt: new Date() } },
     );
 
     res.json({ success: true, message: "Messages marked as read" });
@@ -6228,7 +6850,7 @@ app.put("/admin/category-update/:categoryId", async (req, res) => {
 
     const result = await homeCategoryCollection.updateOne(
       { _id: new ObjectId(categoryId) },
-      { $set: { category } }
+      { $set: { category } },
     );
 
     if (result.matchedCount === 0) {
@@ -6273,7 +6895,7 @@ app.put("/admin-post-edit/:postId", async (req, res) => {
 
     const updatedPost = await adminPostCollections.updateOne(
       { _id: new ObjectId(postId) },
-      { $set: { title, message, updatedAt: new Date() } }
+      { $set: { title, message, updatedAt: new Date() } },
     );
 
     if (updatedPost.matchedCount === 0) {
@@ -6341,18 +6963,18 @@ app.get("/home-category", async (req, res) => {
   try {
     // Ensure database connection
     await connectToMongo();
-    
+
     // Verify collections are accessible
     if (!homeCategoryCollection) {
       return res.json({ success: true, categories: [] });
     }
-    
+
     const categories = await homeCategoryCollection
       .find()
       .limit(50)
       .maxTimeMS(10000)
       .toArray();
-    
+
     res.json({ success: true, categories: categories || [] });
   } catch (error) {
     console.error("Error while getting category:", error);
@@ -6394,7 +7016,7 @@ app.put("/pdf-books/:id", async (req, res) => {
           updatedAt: new Date(),
         },
       },
-      { returnDocument: "after" }
+      { returnDocument: "after" },
     );
 
     if (!updatedBook.value) {
@@ -6741,7 +7363,7 @@ app.patch("/api/v1/organizations/:id/approve", async (req, res) => {
 
     const result = await organizationCollections.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { status: "accepted", orgType: orgType } }
+      { $set: { status: "accepted", orgType: orgType } },
     );
 
     if (result.matchedCount === 0) {
@@ -6864,7 +7486,7 @@ app.post("/organizations/:orgId/sections", async (req, res) => {
     // Update organization with new section
     const result = await organizationCollections.updateOne(
       { _id: new ObjectId(orgId) },
-      { $push: { sections: section } }
+      { $push: { sections: section } },
     );
 
     if (result.modifiedCount === 0) {
@@ -6913,7 +7535,7 @@ app.delete("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
       {
         $unset: { [`sections.${sectionIndex}`]: 1 },
       },
-      { returnDocument: "after" }
+      { returnDocument: "after" },
     );
 
     // Remove null values from the sections array
@@ -6921,7 +7543,7 @@ app.delete("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
       { _id: new ObjectId(orgId) },
       {
         $pull: { sections: null },
-      }
+      },
     );
 
     if (!result.value) {
@@ -6986,7 +7608,7 @@ app.put("/organizations/:orgId/sections/:sectionIndex", async (req, res) => {
           },
         },
       },
-      { returnDocument: "after" }
+      { returnDocument: "after" },
     );
 
     if (!result.value) {
@@ -7067,7 +7689,7 @@ app.post("/api/v1/activities", async (req, res) => {
           activities: [...(organization.activities || []), activity],
         },
       },
-      { returnDocument: "after" }
+      { returnDocument: "after" },
     );
 
     res.status(201).json({
@@ -7093,7 +7715,7 @@ app.put("/api/v1/events/:activityId", async (req, res) => {
   try {
     // Find the event containing the activity
     const organization = await organizationCollections.findOne(
-      new ObjectId(organizationId)
+      new ObjectId(organizationId),
     );
     if (!organization) {
       return res
@@ -7101,7 +7723,7 @@ app.put("/api/v1/events/:activityId", async (req, res) => {
         .json({ success: false, message: "Activity not found in any event" });
     }
     const activity = organization.activities.find(
-      (activity) => activity._id.toString() === activityId
+      (activity) => activity._id.toString() === activityId,
     );
     if (!activity) {
       return res
@@ -7120,7 +7742,7 @@ app.put("/api/v1/events/:activityId", async (req, res) => {
         $set: {
           activities: organization.activities,
         },
-      }
+      },
     );
     res
       .status(200)
@@ -7138,7 +7760,7 @@ app.get("/api/v1/activity/:id", async (req, res) => {
   try {
     const activity = await organizationCollections.findOne(
       { "activities._id": new ObjectId(id) },
-      { projection: { activities: { $elemMatch: { _id: new ObjectId(id) } } } }
+      { projection: { activities: { $elemMatch: { _id: new ObjectId(id) } } } },
     );
     if (!activity) {
       return res.status(404).json({ error: "Activity not found" });
@@ -7177,7 +7799,7 @@ app.delete("/api/v1/activities/:activityId/:orgId", async (req, res) => {
       _id: new ObjectId(orgId),
     });
     const activity = org.activities.find(
-      (activity) => activity._id.toString() === activityId
+      (activity) => activity._id.toString() === activityId,
     );
     if (!activity) {
       return res.status(404).json({ error: "Activity not found" });
@@ -7185,7 +7807,7 @@ app.delete("/api/v1/activities/:activityId/:orgId", async (req, res) => {
     const updatedOrg = await organizationCollections.findOneAndUpdate(
       { _id: new ObjectId(orgId) },
       { $pull: { activities: { _id: new ObjectId(activityId) } } },
-      { returnDocument: "after" }
+      { returnDocument: "after" },
     );
     res.status(200).json({ success: true, data: updatedOrg });
   } catch (error) {
@@ -7210,7 +7832,7 @@ app.put("/api/v1/activities/:activityId/:orgId", async (req, res) => {
           "activities.$.image": image,
         },
       },
-      { returnDocument: "after" }
+      { returnDocument: "after" },
     );
 
     if (!updatedOrg) {
@@ -7301,7 +7923,7 @@ app.patch("/api/channels/:channelId/status", async (req, res) => {
   try {
     const result = await channelsCollection.updateOne(
       { _id: new ObjectId(channelId) },
-      { $set: { status } }
+      { $set: { status } },
     );
 
     if (result.modifiedCount === 1) {
@@ -7409,7 +8031,7 @@ app.put("/api/channels/:channelId/messages/:messageId", async (req, res) => {
           edited: true,
           editedAt: new Date(),
         },
-      }
+      },
     );
 
     if (result.modifiedCount === 1) {
@@ -7556,7 +8178,7 @@ app.post("/api/courses/:id/videos", async (req, res) => {
           },
         },
       },
-      { returnDocument: "after" } // return the updated course
+      { returnDocument: "after" }, // return the updated course
     );
 
     res.status(200).json(updatedCourse.value);
@@ -7594,7 +8216,7 @@ app.delete("/api/courses/:id/videos/:videoIndex", async (req, res) => {
     const updatedCourse = await coursesCollection.findOneAndUpdate(
       { _id: new ObjectId(courseId) },
       { $set: { videos: course.videos } },
-      { returnDocument: "after" }
+      { returnDocument: "after" },
     );
 
     res.status(200).json(updatedCourse.value);
@@ -7826,22 +8448,32 @@ app.post("/cart/add", async (req, res) => {
     const cart = await cartsCollection.findOne({ userId });
 
     if (cart) {
-      // Check if product already exists in cart
+      // Check if product with SAME variants already exists in cart
       const existingItem = cart.items.find(
-        (item) => item.productId === product._id
+        (item) =>
+          item.productId === product._id &&
+          item.selectedSize === product.selectedSize &&
+          item.selectedColor === product.selectedColor,
       );
 
       if (existingItem) {
-        // Update quantity
+        // Update quantity for exact item match
         await cartsCollection.updateOne(
-          { userId, "items.productId": product._id },
-          { $inc: { "items.$.quantity": quantity } }
+          {
+            userId,
+            "items.productId": product._id,
+            "items.selectedSize": product.selectedSize,
+            "items.selectedColor": product.selectedColor,
+          },
+          { $inc: { "items.$.quantity": quantity } },
         );
       } else {
         // Add new product
         await cartsCollection.updateOne(
           { userId },
-          { $push: { items: { ...product, productId: product._id, quantity } } }
+          {
+            $push: { items: { ...product, productId: product._id, quantity } },
+          },
         );
       }
     } else {
@@ -7882,12 +8514,12 @@ app.patch("/cart/update", async (req, res) => {
     const updatedItems = cart.items.map((item) =>
       item?._id.toString() === productId
         ? { ...item, quantity: Number(quantity) }
-        : item
+        : item,
     );
 
     await cartsCollection.updateOne(
       { userId },
-      { $set: { items: updatedItems } }
+      { $set: { items: updatedItems } },
     );
 
     res.status(200).json({
@@ -7922,12 +8554,12 @@ app.delete("/cart/remove/:productId", async (req, res) => {
 
     // Remove the product
     const updatedItems = cart.items.filter(
-      (item) => item?._id?.toString() !== productId
+      (item) => item?._id?.toString() !== productId,
     );
 
     await cartsCollection.updateOne(
       { userId },
-      { $set: { items: updatedItems } }
+      { $set: { items: updatedItems } },
     );
 
     res
@@ -7941,17 +8573,17 @@ app.delete("/cart/remove/:productId", async (req, res) => {
 
 app.post("/orders/create", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-  
+
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
   try {
     await connectToMongo();
-    
+
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = await usersCollections.findOne({ number: decoded.number });
-    
+
     if (!user) {
       return res.status(404).json({ error: "User not found." });
     }
@@ -7966,41 +8598,50 @@ app.post("/orders/create", async (req, res) => {
       deliveryChargePerProduct,
       paymentMethod,
       orderSource,
-      coinsUsed = 0,  // NEW: Coins to use for payment (default 0)
+      coinsUsed = 0, // NEW: Coins to use for payment (default 0)
     } = req.body;
 
     // Validation
     if (!items || items.length === 0) {
-      return res.status(400).json({ success: false, message: "No items in order" });
+      return res
+        .status(400)
+        .json({ success: false, message: "No items in order" });
     }
 
     // Recalculate and validate maximum coins allowed based on each product's stored percentage
     let maxCoinsAllowed = 0;
     try {
-      const productIds = items.map(item => item._id || item.productId);
-      const dbProducts = await productsCollection.find({ _id: { $in: productIds.map(id => new ObjectId(id)) } }).toArray();
-      
+      const productIds = items.map((item) => item._id || item.productId);
+      const dbProducts = await productsCollection
+        .find({ _id: { $in: productIds.map((id) => new ObjectId(id)) } })
+        .toArray();
+
       const productMap = dbProducts.reduce((acc, p) => {
         acc[p._id.toString()] = p;
         return acc;
       }, {});
 
-      items.forEach(item => {
+      items.forEach((item) => {
         const dbProduct = productMap[item._id || item.productId];
         const percentage = dbProduct?.coinUsagePercentage || 30; // default to 30% if not set
-        const itemMaxTaka = (item.price * item.quantity) * (percentage / 100);
-        maxCoinsAllowed += (itemMaxTaka * COIN_TO_TAKA_RATE);
+        const itemMaxTaka = item.price * item.quantity * (percentage / 100);
+        maxCoinsAllowed += itemMaxTaka * COIN_TO_TAKA_RATE;
       });
     } catch (e) {
       console.error("Error calculating coin limit:", e);
       // If DB check fails, fallback to a safe 30% for all items
-      maxCoinsAllowed = items.reduce((acc, item) => acc + ((item.price * item.quantity * 0.3) * COIN_TO_TAKA_RATE), 0);
+      maxCoinsAllowed = items.reduce(
+        (acc, item) =>
+          acc + item.price * item.quantity * 0.3 * COIN_TO_TAKA_RATE,
+        0,
+      );
     }
 
-    if (coinsUsed > Math.floor(maxCoinsAllowed) + 1) { // +1 for small rounding issues
-      return res.status(400).json({ 
+    if (coinsUsed > Math.floor(maxCoinsAllowed) + 1) {
+      // +1 for small rounding issues
+      return res.status(400).json({
         error: "Coins amount exceeds the allowed percentage for these products",
-        limit: Math.floor(maxCoinsAllowed)
+        limit: Math.floor(maxCoinsAllowed),
       });
     }
 
@@ -8014,14 +8655,16 @@ app.post("/orders/create", async (req, res) => {
     }
 
     if (coinsUsed % 100 !== 0) {
-      return res.status(400).json({ error: "Coins must be in multiples of 100" });
+      return res
+        .status(400)
+        .json({ error: "Coins must be in multiples of 100" });
     }
 
     if (user.flyWallet < coinsUsed) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: "Insufficient FlyWallet balance",
         required: coinsUsed,
-        available: user.flyWallet || 0
+        available: user.flyWallet || 0,
       });
     }
 
@@ -8030,24 +8673,30 @@ app.post("/orders/create", async (req, res) => {
     const paymentBreakdown = {
       coinPayment: coinsInTaka,
       cashPayment: remainingAmount,
-      paymentMethod: isFullyCoinPaid ? "FullCoins" : (coinsUsed > 0 ? "Hybrid" : "CashOnly")
+      paymentMethod: isFullyCoinPaid
+        ? "FullCoins"
+        : coinsUsed > 0
+          ? "Hybrid"
+          : "CashOnly",
     };
 
-    console.log(`💰 Order creation: Total ৳${totalAmount}, Coins: ${coinsUsed} (৳${coinsInTaka}), Remaining: ৳${remainingAmount}`);
+    console.log(
+      `💰 Order creation: Total ৳${totalAmount}, Coins: ${coinsUsed} (৳${coinsInTaka}), Remaining: ৳${remainingAmount}`,
+    );
 
     // Start MongoDB transaction for atomicity
     const session = client.startSession();
-    
+
     try {
       await session.withTransaction(async () => {
         // 1️⃣ Deduct coins if used
         if (coinsUsed > 0) {
           const updateResult = await usersCollections.updateOne(
-            { 
+            {
               _id: user._id,
-              flyWallet: { $gte: coinsUsed }  // Ensure sufficient balance (optimistic locking)
+              flyWallet: { $gte: coinsUsed }, // Ensure sufficient balance (optimistic locking)
             },
-            { 
+            {
               $inc: { flyWallet: -coinsUsed },
               $push: {
                 walletTransactions: {
@@ -8055,18 +8704,22 @@ app.post("/orders/create", async (req, res) => {
                   amount: coinsUsed,
                   amountInTaka: coinsInTaka,
                   reason: "Marketplace purchase",
-                  date: new Date()
-                }
-              }
+                  date: new Date(),
+                },
+              },
             },
-            { session }
+            { session },
           );
-          
+
           if (updateResult.matchedCount === 0) {
-            throw new Error("Insufficient coins or concurrent modification detected");
+            throw new Error(
+              "Insufficient coins or concurrent modification detected",
+            );
           }
-          
-          console.log(`✅ Deducted ${coinsUsed} coins from user ${user.number}`);
+
+          console.log(
+            `✅ Deducted ${coinsUsed} coins from user ${user.number}`,
+          );
         }
 
         // 2️⃣ Create order with payment breakdown
@@ -8079,23 +8732,25 @@ app.post("/orders/create", async (req, res) => {
           deliveryCharges,
           totalProducts,
           deliveryChargePerProduct,
-          
+
           // Payment information
           paymentMethod: isFullyCoinPaid ? "FlyWallet" : paymentMethod,
           paymentStatus: isFullyCoinPaid ? "paid" : "pending",
-          
+
           // Coin payment details
           coinsUsed,
           coinsInTaka,
           remainingAmount,
           paymentBreakdown,
-          
+
           orderStatus: "pending",
           orderSource,
           createdAt: new Date(),
         };
 
-        const orderResult = await ordersCollection.insertOne(newOrder, { session });
+        const orderResult = await ordersCollection.insertOne(newOrder, {
+          session,
+        });
         console.log(`✅ Order created: ${orderResult.insertedId}`);
 
         // 3️⃣ Update product stock
@@ -8103,20 +8758,17 @@ app.post("/orders/create", async (req, res) => {
           await productsCollection.updateOne(
             { _id: new ObjectId(item.productId) },
             { $inc: { stock: -item.quantity } },
-            { session }
+            { session },
           );
         }
 
         // 4️⃣ Clear cart (handle both string & ObjectId cases)
         await cartsCollection.updateOne(
           {
-            $or: [
-              { userId: user._id.toString() },
-              { userId: user._id },
-            ],
+            $or: [{ userId: user._id.toString() }, { userId: user._id }],
           },
           { $set: { items: [] } },
-          { session }
+          { session },
         );
 
         // 5️⃣ Emit socket event for wallet update
@@ -8127,8 +8779,8 @@ app.post("/orders/create", async (req, res) => {
             transaction: {
               type: "purchase",
               amount: coinsUsed,
-              orderId: orderResult.insertedId
-            }
+              orderId: orderResult.insertedId,
+            },
           });
         }
 
@@ -8138,7 +8790,7 @@ app.post("/orders/create", async (req, res) => {
           message: "Order created successfully",
           orderId: orderResult.insertedId,
           paymentBreakdown,
-          coinsDeducted: coinsUsed
+          coinsDeducted: coinsUsed,
         });
       });
     } catch (transactionError) {
@@ -8147,12 +8799,11 @@ app.post("/orders/create", async (req, res) => {
     } finally {
       await session.endSession();
     }
-
   } catch (error) {
     console.error("❌ Error in /orders/create:", error);
-    res.status(500).json({ 
-      success: false, 
-      message: error.message || "Internal server error" 
+    res.status(500).json({
+      success: false,
+      message: error.message || "Internal server error",
     });
   }
 });
@@ -8163,7 +8814,7 @@ app.patch("/payments/:orderId/confirm", async (req, res) => {
 
     const result = await ordersCollection.updateOne(
       { _id: new ObjectId(orderId) },
-      { $set: { paymentStatus: "confirmed", confirmedAt: new Date() } }
+      { $set: { paymentStatus: "confirmed", confirmedAt: new Date() } },
     );
 
     if (result.modifiedCount > 0) {
@@ -8218,7 +8869,7 @@ app.patch("/payments/confirm/:orderId", async (req, res) => {
     const { orderId } = req.params;
     const result = await ordersCollection.updateOne(
       { _id: new ObjectId(orderId) },
-      { $set: { paymentStatus: "confirmed" } }
+      { $set: { paymentStatus: "confirmed" } },
     );
 
     res.json({ success: true, message: "Order confirmed", result });
@@ -8247,7 +8898,7 @@ app.post("/addresses", async (req, res) => {
     if (addressData.isDefault) {
       await addressesCollection.updateMany(
         { userId: addressData.userId, isDefault: true },
-        { $set: { isDefault: false } }
+        { $set: { isDefault: false } },
       );
     }
 
@@ -8291,7 +8942,7 @@ app.put("/addresses/:id", async (req, res) => {
     if (addressData.isDefault) {
       await addressesCollection.updateMany(
         { userId: addressData.userId, isDefault: true },
-        { $set: { isDefault: false } }
+        { $set: { isDefault: false } },
       );
     }
 
@@ -8306,7 +8957,7 @@ app.put("/addresses/:id", async (req, res) => {
           updatedAt: new Date(),
         },
       },
-      { returnDocument: "after" }
+      { returnDocument: "after" },
     );
 
     if (!updated.value) {
@@ -8421,7 +9072,7 @@ app.patch("/seller-requests/:id", async (req, res) => {
 
     const result = await sellerCollections.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { status } }
+      { $set: { status } },
     );
 
     res.status(200).json({
@@ -8488,7 +9139,7 @@ app.patch("/sellers/:id/suspend", async (req, res) => {
 
     const result = await sellerCollections.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { status: "suspended" } }
+      { $set: { status: "suspended" } },
     );
 
     if (result.modifiedCount === 0) {
@@ -8654,7 +9305,7 @@ app.put("/update-product/:id", async (req, res) => {
   try {
     const result = await productsCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: updatedData }
+      { $set: updatedData },
     );
 
     if (result.matchedCount === 0) {
@@ -8670,6 +9321,46 @@ app.put("/update-product/:id", async (req, res) => {
     res.status(500).json({ message: "Internal server error" });
   }
 });
+// Helper function to handle point refund on cancellation
+const handleOrderRefund = async (orderId) => {
+  try {
+    const order = await ordersCollection.findOne({
+      _id: new ObjectId(orderId),
+    });
+    if (!order) return;
+
+    // Refund if status is cancelled and points haven't been refunded yet
+    if (
+      order.orderStatus === "cancelled" &&
+      order.coinsUsed > 0 &&
+      !order.pointsRefunded
+    ) {
+      const user = await usersCollections.findOne({
+        number: order.shippingInfo.number,
+      });
+      if (user) {
+        const newBalance = (user.flyWallet || 0) + order.coinsUsed;
+        await usersCollections.updateOne(
+          { _id: user._id },
+          { $set: { flyWallet: newBalance } },
+        );
+
+        // Mark as refunded to prevent duplicate refunds
+        await ordersCollection.updateOne(
+          { _id: new ObjectId(orderId) },
+          { $set: { pointsRefunded: true } },
+        );
+
+        console.log(
+          `💰 Refunded ${order.coinsUsed} points to user ${user.number} for cancelled order ${orderId}`,
+        );
+      }
+    }
+  } catch (error) {
+    console.error("❌ Error in handleOrderRefund:", error);
+  }
+};
+
 // Get all orders for a specific seller
 app.get("/seller/orders/:vendorId", async (req, res) => {
   const { vendorId } = req.params;
@@ -8698,7 +9389,7 @@ app.put("/seller/orders/:orderId/item/:itemId", async (req, res) => {
     // প্রথমে আইটেম স্ট্যাটাস আপডেট করা
     const result = await ordersCollection.updateOne(
       { _id: new ObjectId(orderId), "items._id": itemId },
-      { $set: { "items.$.itemOrderStatus": status } }
+      { $set: { "items.$.itemOrderStatus": status } },
     );
 
     if (result.matchedCount === 0) {
@@ -8742,8 +9433,13 @@ app.put("/seller/orders/:orderId/item/:itemId", async (req, res) => {
     // অর্ডারের মূল স্ট্যাটাস আপডেট করা
     await ordersCollection.updateOne(
       { _id: new ObjectId(orderId) },
-      { $set: { orderStatus: newOrderStatus } }
+      { $set: { orderStatus: newOrderStatus } },
     );
+
+    // If order is cancelled, trigger refund
+    if (newOrderStatus === "cancelled") {
+      await handleOrderRefund(orderId);
+    }
 
     res.status(200).json({
       success: true,
@@ -8976,7 +9672,7 @@ app.put("/update-admin-product/:id", async (req, res) => {
   try {
     const result = await productsCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: updatedData }
+      { $set: updatedData },
     );
 
     if (result.matchedCount === 0) {
@@ -9064,7 +9760,7 @@ app.put("/update-admin-category/:id", async (req, res) => {
 
     const result = await productsCategories.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { name: name.trim() } }
+      { $set: { name: name.trim() } },
     );
 
     if (result.matchedCount === 0) {
@@ -9163,8 +9859,13 @@ app.patch("/admin-products/orders/:orderId/status", async (req, res) => {
     }
     const result = await ordersCollection.updateOne(
       { _id: new ObjectId(orderId) },
-      { $set: { orderStatus: status, updatedAt: new Date() } }
+      { $set: { orderStatus: status, updatedAt: new Date() } },
     );
+
+    // If order is cancelled, trigger refund
+    if (status === "cancelled") {
+      await handleOrderRefund(orderId);
+    }
 
     res
       .status(200)
@@ -9195,7 +9896,7 @@ app.patch("/admin-products/orders/:orderId/payment", async (req, res) => {
     }
     const result = await ordersCollection.updateOne(
       { _id: new ObjectId(orderId) },
-      { $set: { paymentStatus: status, updatedAt: new Date() } }
+      { $set: { paymentStatus: status, updatedAt: new Date() } },
     );
 
     res
@@ -9243,7 +9944,7 @@ app.patch("/admin-withdraw/:withdrawId/status", async (req, res) => {
 
     const result = await withdrawsCollection.updateOne(
       { _id: new ObjectId(withdrawId) },
-      { $set: { status } }
+      { $set: { status } },
     );
 
     if (result.modifiedCount === 0) {
@@ -9349,7 +10050,7 @@ app.patch("/seller/banner-request/:bannerId", async (req, res) => {
           image,
           updatedAt: new Date(),
         },
-      }
+      },
     );
 
     res.json({ success: true, message: "Banner updated" });
@@ -9436,7 +10137,7 @@ app.patch("/admin/banner-request/:id/status", async (req, res) => {
     // Remove restriction, always allow status change
     await bannersCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { status: status } }
+      { $set: { status: status } },
     );
 
     res.json({ success: true, message: `Banner status updated to ${status}` });
@@ -9563,13 +10264,22 @@ app.get("/products/featured", async (req, res) => {
 // Employer: apply for posting permission
 app.post("/employers/apply", verifyTokenEarly, async (req, res) => {
   try {
-    const { companyName, companyWebsite, companyLocation, description } = req.body || {};
+    const { companyName, companyWebsite, companyLocation, description } =
+      req.body || {};
     if (!companyName) {
-      return res.status(400).json({ success: false, message: "companyName is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "companyName is required" });
     }
-    const existing = await employersCollection.findOne({ userId: req.user._id });
+    const existing = await employersCollection.findOne({
+      userId: req.user._id,
+    });
     if (existing) {
-      return res.status(200).json({ success: true, message: "Application already submitted", data: existing });
+      return res.status(200).json({
+        success: true,
+        message: "Application already submitted",
+        data: existing,
+      });
     }
     const doc = {
       userId: req.user._id,
@@ -9582,86 +10292,156 @@ app.post("/employers/apply", verifyTokenEarly, async (req, res) => {
       createdAt: new Date(),
     };
     const result = await employersCollection.insertOne(doc);
-    return res.json({ success: true, data: { _id: result.insertedId, ...doc } });
+    return res.json({
+      success: true,
+      data: { _id: result.insertedId, ...doc },
+    });
   } catch (e) {
     console.error("POST /employers/apply", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Employer: status
 app.get("/employers/status", verifyTokenEarly, async (req, res) => {
   try {
-    const employer = await employersCollection.findOne({ userId: req.user._id });
-    return res.json({ success: true, approved: !!employer?.approved, status: employer?.status || "none", employer });
+    const employer = await employersCollection.findOne({
+      userId: req.user._id,
+    });
+    return res.json({
+      success: true,
+      approved: !!employer?.approved,
+      status: employer?.status || "none",
+      employer,
+    });
   } catch (e) {
     console.error("GET /employers/status", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Admin: list employer requests (reuse role field if available; here simple guard by role === 'admin')
 app.get("/admin/employers/requests", verifyTokenEarly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") return res.status(403).json({ success: false, message: "Forbidden" });
-    const items = await employersCollection.find({ status: "pending" }).sort({ createdAt: -1 }).toArray();
+    if (req.user.role !== "admin")
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    const items = await employersCollection
+      .find({ status: "pending" })
+      .sort({ createdAt: -1 })
+      .toArray();
     return res.json({ success: true, data: items });
   } catch (e) {
     console.error("GET /admin/employers/requests", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
-app.patch("/admin/employers/:id/approve", verifyTokenEarly, async (req, res) => {
-  try {
-    if (req.user.role !== "admin") return res.status(403).json({ success: false, message: "Forbidden" });
-    const { id } = req.params;
-    const result = await employersCollection.updateOne(
-      { _id: new ObjectId(id) },
-      { $set: { approved: true, status: "approved", approvedAt: new Date(), approvedBy: req.user._id } }
-    );
-    if (!result.matchedCount) return res.status(404).json({ success: false, message: "Request not found" });
-    return res.json({ success: true });
-  } catch (e) {
-    console.error("PATCH /admin/employers/:id/approve", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+app.patch(
+  "/admin/employers/:id/approve",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ success: false, message: "Forbidden" });
+      const { id } = req.params;
+      const result = await employersCollection.updateOne(
+        { _id: new ObjectId(id) },
+        {
+          $set: {
+            approved: true,
+            status: "approved",
+            approvedAt: new Date(),
+            approvedBy: req.user._id,
+          },
+        },
+      );
+      if (!result.matchedCount)
+        return res
+          .status(404)
+          .json({ success: false, message: "Request not found" });
+      return res.json({ success: true });
+    } catch (e) {
+      console.error("PATCH /admin/employers/:id/approve", e);
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
+    }
+  },
+);
 
 app.patch("/admin/employers/:id/reject", verifyTokenEarly, async (req, res) => {
   try {
-    if (req.user.role !== "admin") return res.status(403).json({ success: false, message: "Forbidden" });
+    if (req.user.role !== "admin")
+      return res.status(403).json({ success: false, message: "Forbidden" });
     const { id } = req.params;
     const { reason } = req.body || {};
     const result = await employersCollection.updateOne(
       { _id: new ObjectId(id) },
-      { $set: { approved: false, status: "rejected", rejectedAt: new Date(), rejectedBy: req.user._id, reason: reason || "" } }
+      {
+        $set: {
+          approved: false,
+          status: "rejected",
+          rejectedAt: new Date(),
+          rejectedBy: req.user._id,
+          reason: reason || "",
+        },
+      },
     );
-    if (!result.matchedCount) return res.status(404).json({ success: false, message: "Request not found" });
+    if (!result.matchedCount)
+      return res
+        .status(404)
+        .json({ success: false, message: "Request not found" });
     return res.json({ success: true });
   } catch (e) {
     console.error("PATCH /admin/employers/:id/reject", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Helper: ensure employer approved
 async function ensureEmployerApproved(userId) {
-  const emp = await employersCollection.findOne({ userId: new ObjectId(userId) });
+  const emp = await employersCollection.findOne({
+    userId: new ObjectId(userId),
+  });
   return !!emp?.approved;
 }
 
 // Create a job (employer only)
 app.post("/jobs", verifyTokenEarly, async (req, res) => {
   try {
-    const isApproved = await employersCollection.findOne({ userId: req.user._id, approved: true });
-    if (!isApproved) return res.status(403).json({ success: false, message: "Employer approval required" });
+    const isApproved = await employersCollection.findOne({
+      userId: req.user._id,
+      approved: true,
+    });
+    if (!isApproved)
+      return res
+        .status(403)
+        .json({ success: false, message: "Employer approval required" });
     const {
-      title, description, category, location, jobType, experienceLevel,
-      salaryMin, salaryMax, skills, deadline
+      title,
+      description,
+      category,
+      location,
+      jobType,
+      experienceLevel,
+      salaryMin,
+      salaryMax,
+      skills,
+      deadline,
     } = req.body || {};
     if (!title || !description) {
-      return res.status(400).json({ success: false, message: "title and description are required" });
+      return res.status(400).json({
+        success: false,
+        message: "title and description are required",
+      });
     }
     const job = {
       title,
@@ -9682,17 +10462,32 @@ app.post("/jobs", verifyTokenEarly, async (req, res) => {
       applicationsCount: 0,
     };
     const result = await jobsCollection.insertOne(job);
-    return res.json({ success: true, data: { _id: result.insertedId, ...job } });
+    return res.json({
+      success: true,
+      data: { _id: result.insertedId, ...job },
+    });
   } catch (e) {
     console.error("POST /jobs", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // List jobs with filters and pagination
 app.get("/jobs", async (req, res) => {
   try {
-    const { q, category, location, jobType, experienceLevel, minSalary, maxSalary, page = 1, limit = 10 } = req.query || {};
+    const {
+      q,
+      category,
+      location,
+      jobType,
+      experienceLevel,
+      minSalary,
+      maxSalary,
+      page = 1,
+      limit = 10,
+    } = req.query || {};
     const query = { status: "open" };
     if (q) query.title = { $regex: q, $options: "i" };
     if (category) query.category = category;
@@ -9700,14 +10495,28 @@ app.get("/jobs", async (req, res) => {
     if (jobType) query.jobType = jobType;
     if (experienceLevel) query.experienceLevel = experienceLevel;
     if (minSalary) query.salaryMin = { $gte: Number(minSalary) };
-    if (maxSalary) query.salaryMax = { ...(query.salaryMax || {}), $lte: Number(maxSalary) };
+    if (maxSalary)
+      query.salaryMax = { ...(query.salaryMax || {}), $lte: Number(maxSalary) };
     const skip = (Number(page) - 1) * Number(limit);
-    const cursor = jobsCollection.find(query).sort({ createdAt: -1 }).skip(skip).limit(Number(limit));
-    const [items, total] = await Promise.all([cursor.toArray(), jobsCollection.countDocuments(query)]);
-    return res.json({ success: true, data: items, pagination: { page: Number(page), limit: Number(limit), total } });
+    const cursor = jobsCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(Number(limit));
+    const [items, total] = await Promise.all([
+      cursor.toArray(),
+      jobsCollection.countDocuments(query),
+    ]);
+    return res.json({
+      success: true,
+      data: items,
+      pagination: { page: Number(page), limit: Number(limit), total },
+    });
   } catch (e) {
     console.error("GET /jobs", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -9716,14 +10525,21 @@ app.get("/jobs/:id", async (req, res) => {
   try {
     const { id } = req.params;
     let objId;
-    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    try {
+      objId = new ObjectId(id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
     const job = await jobsCollection.findOne({ _id: objId });
-    if (!job) return res.status(404).json({ success: false, message: "Job not found" });
+    if (!job)
+      return res.status(404).json({ success: false, message: "Job not found" });
     await jobsCollection.updateOne({ _id: objId }, { $inc: { views: 1 } });
     return res.json({ success: true, data: job });
   } catch (e) {
     console.error("GET /jobs/:id", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -9732,20 +10548,43 @@ app.patch("/jobs/:id", verifyTokenEarly, async (req, res) => {
   try {
     const { id } = req.params;
     let objId;
-    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    try {
+      objId = new ObjectId(id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
     const job = await jobsCollection.findOne({ _id: objId });
-    if (!job) return res.status(404).json({ success: false, message: "Job not found" });
-    if (job.postedBy.toString() !== req.user._id.toString()) return res.status(403).json({ success: false, message: "Forbidden" });
-    const allowed = ["title", "description", "category", "location", "jobType", "experienceLevel", "salaryMin", "salaryMax", "skills", "deadline", "status"];
+    if (!job)
+      return res.status(404).json({ success: false, message: "Job not found" });
+    if (job.postedBy.toString() !== req.user._id.toString())
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    const allowed = [
+      "title",
+      "description",
+      "category",
+      "location",
+      "jobType",
+      "experienceLevel",
+      "salaryMin",
+      "salaryMax",
+      "skills",
+      "deadline",
+      "status",
+    ];
     const $set = { updatedAt: new Date() };
     for (const key of allowed) {
-      if (key in req.body) $set[key] = key.includes("salary") ? Number(req.body[key]) : req.body[key];
+      if (key in req.body)
+        $set[key] = key.includes("salary")
+          ? Number(req.body[key])
+          : req.body[key];
     }
     await jobsCollection.updateOne({ _id: objId }, { $set });
     return res.json({ success: true });
   } catch (e) {
     console.error("PATCH /jobs/:id", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -9754,12 +10593,23 @@ app.post("/jobs/:id/apply", verifyTokenEarly, async (req, res) => {
   try {
     const { id } = req.params;
     let objId;
-    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    try {
+      objId = new ObjectId(id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
     const job = await jobsCollection.findOne({ _id: objId });
-    if (!job || job.status !== "open") return res.status(404).json({ success: false, message: "Job not open" });
+    if (!job || job.status !== "open")
+      return res.status(404).json({ success: false, message: "Job not open" });
     const { cvUrl, coverLetter } = req.body || {};
-    const exists = await jobApplicationsCollection.findOne({ jobId: objId, userId: req.user._id });
-    if (exists) return res.status(200).json({ success: true, message: "Already applied" });
+    const exists = await jobApplicationsCollection.findOne({
+      jobId: objId,
+      userId: req.user._id,
+    });
+    if (exists)
+      return res
+        .status(200)
+        .json({ success: true, message: "Already applied" });
     const appDoc = {
       jobId: objId,
       userId: req.user._id,
@@ -9769,11 +10619,16 @@ app.post("/jobs/:id/apply", verifyTokenEarly, async (req, res) => {
       createdAt: new Date(),
     };
     await jobApplicationsCollection.insertOne(appDoc);
-    await jobsCollection.updateOne({ _id: objId }, { $inc: { applicationsCount: 1 } });
+    await jobsCollection.updateOne(
+      { _id: objId },
+      { $inc: { applicationsCount: 1 } },
+    );
     return res.json({ success: true });
   } catch (e) {
     console.error("POST /jobs/:id/apply", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -9783,7 +10638,14 @@ app.get("/my-applications", verifyTokenEarly, async (req, res) => {
     const apps = await jobApplicationsCollection
       .aggregate([
         { $match: { userId: req.user._id } },
-        { $lookup: { from: "jobsCollection", localField: "jobId", foreignField: "_id", as: "job" } },
+        {
+          $lookup: {
+            from: "jobsCollection",
+            localField: "jobId",
+            foreignField: "_id",
+            as: "job",
+          },
+        },
         { $unwind: "$job" },
         { $sort: { createdAt: -1 } },
       ])
@@ -9791,46 +10653,80 @@ app.get("/my-applications", verifyTokenEarly, async (req, res) => {
     return res.json({ success: true, data: apps });
   } catch (e) {
     console.error("GET /my-applications", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Employer: my jobs
 app.get("/employer/jobs", verifyTokenEarly, async (req, res) => {
   try {
-    const isApproved = await employersCollection.findOne({ userId: req.user._id, approved: true });
-    if (!isApproved) return res.status(403).json({ success: false, message: "Employer approval required" });
-    const items = await jobsCollection.find({ postedBy: req.user._id }).sort({ createdAt: -1 }).toArray();
+    const isApproved = await employersCollection.findOne({
+      userId: req.user._id,
+      approved: true,
+    });
+    if (!isApproved)
+      return res
+        .status(403)
+        .json({ success: false, message: "Employer approval required" });
+    const items = await jobsCollection
+      .find({ postedBy: req.user._id })
+      .sort({ createdAt: -1 })
+      .toArray();
     return res.json({ success: true, data: items });
   } catch (e) {
     console.error("GET /employer/jobs", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Employer: applications for a job
-app.get("/employer/jobs/:id/applications", verifyTokenEarly, async (req, res) => {
-  try {
-    const { id } = req.params;
-    let objId;
-    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
-    const job = await jobsCollection.findOne({ _id: objId });
-    if (!job) return res.status(404).json({ success: false, message: "Job not found" });
-    if (job.postedBy.toString() !== req.user._id.toString()) return res.status(403).json({ success: false, message: "Forbidden" });
-    const apps = await jobApplicationsCollection
-      .aggregate([
-        { $match: { jobId: objId } },
-        { $lookup: { from: "usersCollections", localField: "userId", foreignField: "_id", as: "applicant" } },
-        { $unwind: "$applicant" },
-        { $sort: { createdAt: -1 } },
-      ])
-      .toArray();
-    return res.json({ success: true, data: apps });
-  } catch (e) {
-    console.error("GET /employer/jobs/:id/applications", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
-  }
-});
+app.get(
+  "/employer/jobs/:id/applications",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      let objId;
+      try {
+        objId = new ObjectId(id);
+      } catch {
+        return res.status(400).json({ success: false, message: "Invalid id" });
+      }
+      const job = await jobsCollection.findOne({ _id: objId });
+      if (!job)
+        return res
+          .status(404)
+          .json({ success: false, message: "Job not found" });
+      if (job.postedBy.toString() !== req.user._id.toString())
+        return res.status(403).json({ success: false, message: "Forbidden" });
+      const apps = await jobApplicationsCollection
+        .aggregate([
+          { $match: { jobId: objId } },
+          {
+            $lookup: {
+              from: "usersCollections",
+              localField: "userId",
+              foreignField: "_id",
+              as: "applicant",
+            },
+          },
+          { $unwind: "$applicant" },
+          { $sort: { createdAt: -1 } },
+        ])
+        .toArray();
+      return res.json({ success: true, data: apps });
+    } catch (e) {
+      console.error("GET /employer/jobs/:id/applications", e);
+      return res
+        .status(500)
+        .json({ success: false, message: "Internal server error" });
+    }
+  },
+);
 
 // =====================
 // Freelance Marketplace APIs
@@ -9839,58 +10735,81 @@ app.get("/employer/jobs/:id/applications", verifyTokenEarly, async (req, res) =>
 // Client: Post a project
 app.post("/projects", verifyTokenEarly, async (req, res) => {
   try {
-    const { title, description, category, budgetType, budget, skills, deadline } = req.body;
+    const {
+      title,
+      description,
+      category,
+      budgetType,
+      budget,
+      skills,
+      deadline,
+    } = req.body;
     if (!title || !description || !category || !budgetType) {
-      return res.status(400).json({ success: false, message: "Missing required fields" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing required fields" });
     }
     const project = {
       title,
       description,
       category,
       budgetType, // 'fixed' or 'hourly'
-      budget: budgetType === 'fixed' ? Number(budget) : null,
-      hourlyRate: budgetType === 'hourly' ? Number(budget) : null,
+      budget: budgetType === "fixed" ? Number(budget) : null,
+      hourlyRate: budgetType === "hourly" ? Number(budget) : null,
       skills: Array.isArray(skills) ? skills : [],
       deadline: deadline ? new Date(deadline) : null,
       postedBy: req.user._id,
-      status: 'open', // 'open', 'in_progress', 'completed', 'cancelled'
+      status: "open", // 'open', 'in_progress', 'completed', 'cancelled'
       createdAt: new Date(),
       updatedAt: new Date(),
     };
     const result = await projectsCollection.insertOne(project);
-    return res.json({ success: true, data: { _id: result.insertedId, ...project } });
+    return res.json({
+      success: true,
+      data: { _id: result.insertedId, ...project },
+    });
   } catch (e) {
     console.error("POST /projects", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Get all projects with filters and pagination
 app.get("/projects", async (req, res) => {
   try {
-    const { q, category, budgetType, budgetMin, budgetMax, page = 1, limit = 10 } = req.query;
+    const {
+      q,
+      category,
+      budgetType,
+      budgetMin,
+      budgetMax,
+      page = 1,
+      limit = 10,
+    } = req.query;
     const pageNum = Number(page);
     const limitNum = Number(limit);
     const skip = (pageNum - 1) * limitNum;
 
-    const query = { status: 'open' };
+    const query = { status: "open" };
     if (q) {
       query.$or = [
-        { title: { $regex: q, $options: 'i' } },
-        { description: { $regex: q, $options: 'i' } },
+        { title: { $regex: q, $options: "i" } },
+        { description: { $regex: q, $options: "i" } },
       ];
     }
     if (category) query.category = category;
     if (budgetType) query.budgetType = budgetType;
     if (budgetMin) {
-      if (budgetType === 'fixed') {
+      if (budgetType === "fixed") {
         query.budget = { ...query.budget, $gte: Number(budgetMin) };
       } else {
         query.hourlyRate = { ...query.hourlyRate, $gte: Number(budgetMin) };
       }
     }
     if (budgetMax) {
-      if (budgetType === 'fixed') {
+      if (budgetType === "fixed") {
         query.budget = { ...query.budget, $lte: Number(budgetMax) };
       } else {
         query.hourlyRate = { ...query.hourlyRate, $lte: Number(budgetMax) };
@@ -9898,18 +10817,24 @@ app.get("/projects", async (req, res) => {
     }
 
     const [projects, total] = await Promise.all([
-      projectsCollection.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNum).toArray(),
+      projectsCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .toArray(),
       projectsCollection.countDocuments(query),
     ]);
 
     // Populate postedBy user info
-    const userIds = [...new Set(projects.map(p => p.postedBy.toString()))];
-    const users = await usersCollections.find({ _id: { $in: userIds.map(id => new ObjectId(id)) } })
+    const userIds = [...new Set(projects.map((p) => p.postedBy.toString()))];
+    const users = await usersCollections
+      .find({ _id: { $in: userIds.map((id) => new ObjectId(id)) } })
       .project({ _id: 1, name: 1, profileImage: 1 })
       .toArray();
-    const userMap = Object.fromEntries(users.map(u => [u._id.toString(), u]));
+    const userMap = Object.fromEntries(users.map((u) => [u._id.toString(), u]));
 
-    const projectsWithUser = projects.map(p => ({
+    const projectsWithUser = projects.map((p) => ({
       ...p,
       postedByUser: userMap[p.postedBy.toString()] || null,
     }));
@@ -9917,11 +10842,18 @@ app.get("/projects", async (req, res) => {
     return res.json({
       success: true,
       data: projectsWithUser,
-      pagination: { page: pageNum, limit: limitNum, total, totalPages: Math.ceil(total / limitNum) },
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum),
+      },
     });
   } catch (e) {
     console.error("GET /projects", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -9930,22 +10862,32 @@ app.get("/projects/:id", async (req, res) => {
   try {
     const { id } = req.params;
     let objId;
-    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    try {
+      objId = new ObjectId(id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
     const project = await projectsCollection.findOne({ _id: objId });
-    if (!project) return res.status(404).json({ success: false, message: "Project not found" });
+    if (!project)
+      return res
+        .status(404)
+        .json({ success: false, message: "Project not found" });
 
     // Populate postedBy user
-    const user = await usersCollections.findOne({ _id: project.postedBy }, { projection: { _id: 1, name: 1, profileImage: 1, email: 1 } });
-    
+    const user = await usersCollections.findOne(
+      { _id: project.postedBy },
+      { projection: { _id: 1, name: 1, profileImage: 1, email: 1 } },
+    );
+
     // Populate selectedFreelancer if exists
     let selectedFreelancerUser = null;
     if (project.selectedFreelancer) {
       selectedFreelancerUser = await usersCollections.findOne(
         { _id: project.selectedFreelancer },
-        { projection: { _id: 1, name: 1, profileImage: 1, email: 1 } }
+        { projection: { _id: 1, name: 1, profileImage: 1, email: 1 } },
       );
     }
-    
+
     return res.json({
       success: true,
       data: {
@@ -9956,7 +10898,9 @@ app.get("/projects/:id", async (req, res) => {
     });
   } catch (e) {
     console.error("GET /projects/:id", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -9965,38 +10909,66 @@ app.post("/projects/:id/proposals", verifyTokenEarly, async (req, res) => {
   try {
     const { id } = req.params;
     let objId;
-    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    try {
+      objId = new ObjectId(id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
     const project = await projectsCollection.findOne({ _id: objId });
-    if (!project) return res.status(404).json({ success: false, message: "Project not found" });
-    if (project.status !== 'open') return res.status(400).json({ success: false, message: "Project is not open for proposals" });
+    if (!project)
+      return res
+        .status(404)
+        .json({ success: false, message: "Project not found" });
+    if (project.status !== "open")
+      return res
+        .status(400)
+        .json({ success: false, message: "Project is not open for proposals" });
     if (project.postedBy.toString() === req.user._id.toString()) {
-      return res.status(400).json({ success: false, message: "You cannot propose to your own project" });
+      return res.status(400).json({
+        success: false,
+        message: "You cannot propose to your own project",
+      });
     }
 
     const { coverLetter, proposedPrice, deliveryTime, hourlyRate } = req.body;
     if (!coverLetter || (!proposedPrice && !hourlyRate)) {
-      return res.status(400).json({ success: false, message: "Missing required fields" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing required fields" });
     }
 
     // Check if already proposed
-    const exists = await proposalsCollection.findOne({ projectId: objId, freelancerId: req.user._id });
-    if (exists) return res.status(400).json({ success: false, message: "You have already submitted a proposal" });
+    const exists = await proposalsCollection.findOne({
+      projectId: objId,
+      freelancerId: req.user._id,
+    });
+    if (exists)
+      return res.status(400).json({
+        success: false,
+        message: "You have already submitted a proposal",
+      });
 
     const proposal = {
       projectId: objId,
       freelancerId: req.user._id,
       coverLetter,
-      proposedPrice: project.budgetType === 'fixed' ? Number(proposedPrice) : null,
-      hourlyRate: project.budgetType === 'hourly' ? Number(hourlyRate) : null,
+      proposedPrice:
+        project.budgetType === "fixed" ? Number(proposedPrice) : null,
+      hourlyRate: project.budgetType === "hourly" ? Number(hourlyRate) : null,
       deliveryTime, // e.g., "3 days", "1 week"
-      status: 'pending', // 'pending', 'accepted', 'rejected'
+      status: "pending", // 'pending', 'accepted', 'rejected'
       createdAt: new Date(),
     };
     const result = await proposalsCollection.insertOne(proposal);
-    return res.json({ success: true, data: { _id: result.insertedId, ...proposal } });
+    return res.json({
+      success: true,
+      data: { _id: result.insertedId, ...proposal },
+    });
   } catch (e) {
     console.error("POST /projects/:id/proposals", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10005,9 +10977,16 @@ app.get("/projects/:id/proposals", verifyTokenEarly, async (req, res) => {
   try {
     const { id } = req.params;
     let objId;
-    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    try {
+      objId = new ObjectId(id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
     const project = await projectsCollection.findOne({ _id: objId });
-    if (!project) return res.status(404).json({ success: false, message: "Project not found" });
+    if (!project)
+      return res
+        .status(404)
+        .json({ success: false, message: "Project not found" });
     if (project.postedBy.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
@@ -10015,7 +10994,14 @@ app.get("/projects/:id/proposals", verifyTokenEarly, async (req, res) => {
     const proposals = await proposalsCollection
       .aggregate([
         { $match: { projectId: objId } },
-        { $lookup: { from: "usersCollections", localField: "freelancerId", foreignField: "_id", as: "freelancer" } },
+        {
+          $lookup: {
+            from: "usersCollections",
+            localField: "freelancerId",
+            foreignField: "_id",
+            as: "freelancer",
+          },
+        },
         { $unwind: "$freelancer" },
         { $sort: { createdAt: -1 } },
       ])
@@ -10023,7 +11009,9 @@ app.get("/projects/:id/proposals", verifyTokenEarly, async (req, res) => {
     return res.json({ success: true, data: proposals });
   } catch (e) {
     console.error("GET /projects/:id/proposals", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10032,36 +11020,64 @@ app.patch("/proposals/:id/status", verifyTokenEarly, async (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body; // 'accepted' or 'rejected'
-    if (!['accepted', 'rejected'].includes(status)) {
-      return res.status(400).json({ success: false, message: "Invalid status" });
+    if (!["accepted", "rejected"].includes(status)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid status" });
     }
     let objId;
-    try { objId = new ObjectId(id); } catch { return res.status(400).json({ success: false, message: "Invalid id" }); }
+    try {
+      objId = new ObjectId(id);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid id" });
+    }
 
     const proposal = await proposalsCollection.findOne({ _id: objId });
-    if (!proposal) return res.status(404).json({ success: false, message: "Proposal not found" });
+    if (!proposal)
+      return res
+        .status(404)
+        .json({ success: false, message: "Proposal not found" });
 
-    const project = await projectsCollection.findOne({ _id: proposal.projectId });
-    if (!project) return res.status(404).json({ success: false, message: "Project not found" });
+    const project = await projectsCollection.findOne({
+      _id: proposal.projectId,
+    });
+    if (!project)
+      return res
+        .status(404)
+        .json({ success: false, message: "Project not found" });
     if (project.postedBy.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Forbidden" });
     }
 
-    await proposalsCollection.updateOne({ _id: objId }, { $set: { status, updatedAt: new Date() } });
+    await proposalsCollection.updateOne(
+      { _id: objId },
+      { $set: { status, updatedAt: new Date() } },
+    );
 
-    if (status === 'accepted') {
+    if (status === "accepted") {
       // Update project status and reject other proposals
-      await projectsCollection.updateOne({ _id: proposal.projectId }, { $set: { status: 'in_progress', selectedFreelancer: proposal.freelancerId, updatedAt: new Date() } });
+      await projectsCollection.updateOne(
+        { _id: proposal.projectId },
+        {
+          $set: {
+            status: "in_progress",
+            selectedFreelancer: proposal.freelancerId,
+            updatedAt: new Date(),
+          },
+        },
+      );
       await proposalsCollection.updateMany(
         { projectId: proposal.projectId, _id: { $ne: objId } },
-        { $set: { status: 'rejected', updatedAt: new Date() } }
+        { $set: { status: "rejected", updatedAt: new Date() } },
       );
     }
 
     return res.json({ success: true });
   } catch (e) {
     console.error("PATCH /proposals/:id/status", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10075,7 +11091,9 @@ app.get("/client/projects", verifyTokenEarly, async (req, res) => {
     return res.json({ success: true, data: projects });
   } catch (e) {
     console.error("GET /client/projects", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10085,7 +11103,14 @@ app.get("/freelancer/proposals", verifyTokenEarly, async (req, res) => {
     const proposals = await proposalsCollection
       .aggregate([
         { $match: { freelancerId: req.user._id } },
-        { $lookup: { from: "projectsCollection", localField: "projectId", foreignField: "_id", as: "project" } },
+        {
+          $lookup: {
+            from: "projectsCollection",
+            localField: "projectId",
+            foreignField: "_id",
+            as: "project",
+          },
+        },
         { $unwind: "$project" },
         { $sort: { createdAt: -1 } },
       ])
@@ -10093,7 +11118,9 @@ app.get("/freelancer/proposals", verifyTokenEarly, async (req, res) => {
     return res.json({ success: true, data: proposals });
   } catch (e) {
     console.error("GET /freelancer/proposals", e);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10138,7 +11165,9 @@ app.get("/products/high-discounts", async (req, res) => {
 app.post("/upload/video", videoUpload.single("video"), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ success: false, message: "No video file uploaded" });
+      return res
+        .status(400)
+        .json({ success: false, message: "No video file uploaded" });
     }
 
     // Cloudinary automatically uploads and returns the URL
@@ -10155,7 +11184,9 @@ app.post("/upload/video", videoUpload.single("video"), async (req, res) => {
     });
   } catch (error) {
     console.error("POST /upload/video error:", error);
-    return res.status(500).json({ success: false, message: "Failed to upload video" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to upload video" });
   }
 });
 
@@ -10165,7 +11196,9 @@ app.delete("/upload/video/:publicId", async (req, res) => {
     const { publicId } = req.params;
     const decodedPublicId = decodeURIComponent(publicId);
 
-    await cloudinary.uploader.destroy(decodedPublicId, { resource_type: "video" });
+    await cloudinary.uploader.destroy(decodedPublicId, {
+      resource_type: "video",
+    });
 
     return res.status(200).json({
       success: true,
@@ -10173,7 +11206,9 @@ app.delete("/upload/video/:publicId", async (req, res) => {
     });
   } catch (error) {
     console.error("DELETE /upload/video/:publicId error:", error);
-    return res.status(500).json({ success: false, message: "Failed to delete video" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Failed to delete video" });
   }
 });
 
@@ -10182,22 +11217,27 @@ app.delete("/upload/video/:publicId", async (req, res) => {
   try {
     console.log("🔄 Attempting initial MongoDB connection...");
     await connectToMongo();
-    
+
     // Verify we can access collections
     const db = client.db("flybook");
     const testCollection = db.collection("usersCollections");
     await testCollection.findOne({}, { limit: 1 }).catch(() => {
       // Collection might be empty, which is okay
     });
-    
+
     console.log("✅ Database connection established on startup");
     console.log("✅ Database collections are accessible");
   } catch (error) {
-    console.error("❌ Failed to connect to database on startup:", error.message);
+    console.error(
+      "❌ Failed to connect to database on startup:",
+      error.message,
+    );
     console.error("⚠️  Server will start but database operations may fail");
     console.error("⚠️  Please check:");
     console.error("   1. MongoDB Atlas cluster is running");
-    console.error("   2. DB_USER and DB_PASS environment variables are set correctly");
+    console.error(
+      "   2. DB_USER and DB_PASS environment variables are set correctly",
+    );
     console.error("   3. IP address is whitelisted in MongoDB Atlas");
     console.error("   4. Network connectivity to MongoDB Atlas");
   }
@@ -10206,36 +11246,46 @@ app.delete("/upload/video/:publicId", async (req, res) => {
 // Global error handler - Must be before server starts
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err);
-  
+
   // Ensure CORS headers are sent even on errors
   const origin = req.headers.origin;
-  const allowedOrigins = ["https://flybook.com.bd", "https://flybook-f23c5.web.app", "http://localhost:5173"];
-  
+  const allowedOrigins = [
+    "https://flybook.com.bd",
+    "https://flybook-f23c5.web.app",
+    "http://localhost:5173",
+  ];
+
   if (origin && allowedOrigins.includes(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader("Access-Control-Allow-Origin", origin);
   } else {
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader("Access-Control-Allow-Origin", "*");
   }
-  
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, PATCH');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  
+
+  res.setHeader(
+    "Access-Control-Allow-Methods",
+    "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+  );
+  res.setHeader(
+    "Access-Control-Allow-Headers",
+    "Content-Type, Authorization, X-Requested-With",
+  );
+  res.setHeader("Access-Control-Allow-Credentials", "true");
+
   // Send error response
   res.status(err.status || 500).json({
-    error: err.message || 'Internal Server Error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+    error: err.message || "Internal Server Error",
+    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (err) => {
-  console.error('Unhandled Promise Rejection:', err);
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled Promise Rejection:", err);
 });
 
 // Handle uncaught exceptions
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
   process.exit(1);
 });
 
@@ -10245,7 +11295,11 @@ const server = app.listen(port, () => {
 
 const io = new Server(server, {
   cors: {
-    origin: ["https://flybook.com.bd", "https://flybook-f23c5.web.app", "http://localhost:5173"],
+    origin: [
+      "https://flybook.com.bd",
+      "https://flybook-f23c5.web.app",
+      "http://localhost:5173",
+    ],
     methods: ["GET", "POST"],
     credentials: true,
   },
@@ -10253,7 +11307,7 @@ const io = new Server(server, {
   allowEIO3: true, // Enable compatibility with older clients
 });
 
-app.set('io', io);
+app.set("io", io);
 
 io.on("connection", (socket) => {
   // ইউজারকে রুমে যোগ করা
@@ -10268,37 +11322,40 @@ io.on("connection", (socket) => {
     const roomId = userId;
     socket.join(roomId); // ইউজারকে রুমে যোগ করা
     socket.userId = userId; // Store userId in socket for disconnect handling
-    
+
     try {
       // Check database connection before updating
       try {
         await connectToMongo();
       } catch (dbError) {
-        console.error("Database connection failed in joinUser:", dbError.message);
+        console.error(
+          "Database connection failed in joinUser:",
+          dbError.message,
+        );
         socket.emit("connected"); // Still emit connected even if DB fails
         return; // Exit early if DB connection fails
       }
-      
+
       // Mark user as online in database
       await usersCollections.updateOne(
         { _id: new ObjectId(userId) },
-        { 
-          $set: { 
+        {
+          $set: {
             isOnline: true,
-            lastSeen: new Date()
-          } 
-        }
+            lastSeen: new Date(),
+          },
+        },
       );
-      
+
       // Broadcast user online status to all connected clients
       io.emit("userOnline", { userId });
-      
+
       console.log("user joined and marked online:", roomId);
     } catch (error) {
       console.error("Error marking user online:", error.message || error);
       // Don't block socket connection if DB fails
     }
-    
+
     socket.emit("connected");
   });
 
@@ -10388,7 +11445,7 @@ io.on("connection", (socket) => {
 
   socket.on("disconnect", async () => {
     console.log("A user disconnected:", socket.id);
-    
+
     // Mark user as offline if userId is stored
     if (socket.userId) {
       try {
@@ -10396,23 +11453,26 @@ io.on("connection", (socket) => {
         try {
           await connectToMongo();
         } catch (dbError) {
-          console.error("Database connection failed in disconnect:", dbError.message);
+          console.error(
+            "Database connection failed in disconnect:",
+            dbError.message,
+          );
           return; // Exit early if DB connection fails
         }
-        
+
         await usersCollections.updateOne(
           { _id: new ObjectId(socket.userId) },
-          { 
-            $set: { 
+          {
+            $set: {
               isOnline: false,
-              lastSeen: new Date()
-            } 
-          }
+              lastSeen: new Date(),
+            },
+          },
         );
-        
+
         // Broadcast user offline status to all connected clients
         io.emit("userOffline", { userId: socket.userId });
-        
+
         console.log("user marked offline:", socket.userId);
       } catch (error) {
         console.error("Error marking user offline:", error.message || error);
@@ -10431,22 +11491,33 @@ app.get("/admin/communities", verifyToken, async (req, res) => {
   try {
     // Check if user is admin
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
-    const communities = await communityCollection.find({}).sort({ createdAt: -1 }).toArray();
-    
+    const communities = await communityCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
     // Enrich with stats
     const enriched = await Promise.all(
       communities.map(async (comm) => {
-        const postsCount = await communityPostsCollection.countDocuments({ communityId: comm._id });
-        const coursesCount = await communityCoursesCollection.countDocuments({ communityId: comm._id });
-        const followsCount = await communityFollowsCollection.countDocuments({ communityId: comm._id });
-        
+        const postsCount = await communityPostsCollection.countDocuments({
+          communityId: comm._id,
+        });
+        const coursesCount = await communityCoursesCollection.countDocuments({
+          communityId: comm._id,
+        });
+        const followsCount = await communityFollowsCollection.countDocuments({
+          communityId: comm._id,
+        });
+
         // Get owner info
         const owner = await usersCollections.findOne(
           { _id: comm.mainAdmin },
-          { projection: { name: 1, number: 1, email: 1 } }
+          { projection: { name: 1, number: 1, email: 1 } },
         );
 
         return {
@@ -10454,15 +11525,17 @@ app.get("/admin/communities", verifyToken, async (req, res) => {
           postsCount,
           coursesCount,
           membersCount: followsCount,
-          owner
+          owner,
         };
-      })
+      }),
     );
 
     return res.json({ success: true, data: enriched });
   } catch (error) {
     console.error("GET /admin/communities error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10470,47 +11543,71 @@ app.get("/admin/communities", verifyToken, async (req, res) => {
 app.get("/admin/communities/:id/details", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     let communityObjId;
     try {
       communityObjId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
 
-    const community = await communityCollection.findOne({ _id: communityObjId });
+    const community = await communityCollection.findOne({
+      _id: communityObjId,
+    });
     if (!community) {
-      return res.status(404).json({ success: false, message: "Community not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
     }
 
     // Get all posts
-    const posts = await communityPostsCollection.find({ communityId: communityObjId }).sort({ createdAt: -1 }).toArray();
-    
+    const posts = await communityPostsCollection
+      .find({ communityId: communityObjId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
     // Enrich posts with author info and stats
     const enrichedPosts = await Promise.all(
       posts.map(async (post) => {
         const author = await usersCollections.findOne(
           { _id: post.authorId },
-          { projection: { name: 1, number: 1, image: 1 } }
+          { projection: { name: 1, number: 1, image: 1 } },
         );
-        
-        const likesCount = await communityPostLikesCollection.countDocuments({ postId: post._id });
-        
+
+        const likesCount = await communityPostLikesCollection.countDocuments({
+          postId: post._id,
+        });
+
         let courseInfo = null;
         if (post.type === "course") {
-          const course = await communityCoursesCollection.findOne({ postId: post._id });
+          const course = await communityCoursesCollection.findOne({
+            postId: post._id,
+          });
           if (course) {
-            const enrollmentsCount = await communityEnrollmentsCollection.countDocuments({ courseId: course._id });
-            const chaptersCount = await communityChaptersCollection.countDocuments({ courseId: course._id });
-            const lessonsCount = await communityLessonsCollection.countDocuments({ courseId: course._id });
-            
+            const enrollmentsCount =
+              await communityEnrollmentsCollection.countDocuments({
+                courseId: course._id,
+              });
+            const chaptersCount =
+              await communityChaptersCollection.countDocuments({
+                courseId: course._id,
+              });
+            const lessonsCount =
+              await communityLessonsCollection.countDocuments({
+                courseId: course._id,
+              });
+
             courseInfo = {
               courseId: course._id,
               enrollmentsCount,
               chaptersCount,
-              lessonsCount
+              lessonsCount,
             };
           }
         }
@@ -10519,30 +11616,36 @@ app.get("/admin/communities/:id/details", verifyToken, async (req, res) => {
           ...post,
           author,
           likesCount,
-          courseInfo
+          courseInfo,
         };
-      })
+      }),
     );
 
     // Get members
-    const follows = await communityFollowsCollection.find({ communityId: communityObjId }).toArray();
-    const memberIds = follows.map(f => f.userId);
-    const members = await usersCollections.find(
-      { _id: { $in: memberIds } },
-      { projection: { name: 1, number: 1, image: 1, email: 1 } }
-    ).toArray();
+    const follows = await communityFollowsCollection
+      .find({ communityId: communityObjId })
+      .toArray();
+    const memberIds = follows.map((f) => f.userId);
+    const members = await usersCollections
+      .find(
+        { _id: { $in: memberIds } },
+        { projection: { name: 1, number: 1, image: 1, email: 1 } },
+      )
+      .toArray();
 
     return res.json({
       success: true,
       data: {
         community,
         posts: enrichedPosts,
-        members
-      }
+        members,
+      },
     });
   } catch (error) {
     console.error("GET /admin/communities/:id/details error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10550,56 +11653,79 @@ app.get("/admin/communities/:id/details", verifyToken, async (req, res) => {
 app.delete("/admin/communities/:id", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     let communityObjId;
     try {
       communityObjId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
 
-    const community = await communityCollection.findOne({ _id: communityObjId });
+    const community = await communityCollection.findOne({
+      _id: communityObjId,
+    });
     if (!community) {
-      return res.status(404).json({ success: false, message: "Community not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
     }
 
     // Get all posts
-    const posts = await communityPostsCollection.find({ communityId: communityObjId }).toArray();
-    const postIds = posts.map(p => p._id);
+    const posts = await communityPostsCollection
+      .find({ communityId: communityObjId })
+      .toArray();
+    const postIds = posts.map((p) => p._id);
 
     // Get all courses
-    const courses = await communityCoursesCollection.find({ communityId: communityObjId }).toArray();
-    const courseIds = courses.map(c => c._id);
+    const courses = await communityCoursesCollection
+      .find({ communityId: communityObjId })
+      .toArray();
+    const courseIds = courses.map((c) => c._id);
 
     // Cascade delete everything
     await Promise.all([
       // Delete posts and likes
       communityPostsCollection.deleteMany({ communityId: communityObjId }),
       communityPostLikesCollection.deleteMany({ postId: { $in: postIds } }),
-      
+
       // Delete courses and related data
       communityCoursesCollection.deleteMany({ communityId: communityObjId }),
       communityChaptersCollection.deleteMany({ courseId: { $in: courseIds } }),
       communityLessonsCollection.deleteMany({ courseId: { $in: courseIds } }),
       communityExamsCollection.deleteMany({ courseId: { $in: courseIds } }),
-      communityExamAttemptsCollection.deleteMany({ courseId: { $in: courseIds } }),
-      communityEnrollmentsCollection.deleteMany({ courseId: { $in: courseIds } }),
+      communityExamAttemptsCollection.deleteMany({
+        courseId: { $in: courseIds },
+      }),
+      communityEnrollmentsCollection.deleteMany({
+        courseId: { $in: courseIds },
+      }),
       communityProgressCollection.deleteMany({ courseId: { $in: courseIds } }),
-      communityCertificatesCollection.deleteMany({ courseId: { $in: courseIds } }),
-      
+      communityCertificatesCollection.deleteMany({
+        courseId: { $in: courseIds },
+      }),
+
       // Delete follows
       communityFollowsCollection.deleteMany({ communityId: communityObjId }),
-      
+
       // Finally delete community
-      communityCollection.deleteOne({ _id: communityObjId })
+      communityCollection.deleteOne({ _id: communityObjId }),
     ]);
 
-    return res.json({ success: true, message: "Community and all related data deleted" });
+    return res.json({
+      success: true,
+      message: "Community and all related data deleted",
+    });
   } catch (error) {
     console.error("DELETE /admin/communities/:id error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10607,31 +11733,41 @@ app.delete("/admin/communities/:id", verifyToken, async (req, res) => {
 app.patch("/admin/communities/:id/verify", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     let communityObjId;
     try {
       communityObjId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid community id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid community id" });
     }
 
-    const community = await communityCollection.findOne({ _id: communityObjId });
+    const community = await communityCollection.findOne({
+      _id: communityObjId,
+    });
     if (!community) {
-      return res.status(404).json({ success: false, message: "Community not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
     }
 
     const newVerifiedStatus = !community.isVerified;
     await communityCollection.updateOne(
       { _id: communityObjId },
-      { $set: { isVerified: newVerifiedStatus, updatedAt: new Date() } }
+      { $set: { isVerified: newVerifiedStatus, updatedAt: new Date() } },
     );
 
     return res.json({ success: true, isVerified: newVerifiedStatus });
   } catch (error) {
     console.error("PATCH /admin/communities/:id/verify error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10639,26 +11775,34 @@ app.patch("/admin/communities/:id/verify", verifyToken, async (req, res) => {
 app.delete("/admin/posts/:postId", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     let postObjId;
     try {
       postObjId = new ObjectId(req.params.postId);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid post id" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid post id" });
     }
 
     const post = await communityPostsCollection.findOne({ _id: postObjId });
     if (!post) {
-      return res.status(404).json({ success: false, message: "Post not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Post not found" });
     }
 
     // Cascade delete
     await communityPostLikesCollection.deleteMany({ postId: postObjId });
 
     if (post.type === "course") {
-      const course = await communityCoursesCollection.findOne({ postId: postObjId });
+      const course = await communityCoursesCollection.findOne({
+        postId: postObjId,
+      });
       if (course) {
         const courseId = course._id;
         await Promise.all([
@@ -10669,7 +11813,7 @@ app.delete("/admin/posts/:postId", verifyToken, async (req, res) => {
           communityEnrollmentsCollection.deleteMany({ courseId }),
           communityProgressCollection.deleteMany({ courseId }),
           communityCertificatesCollection.deleteMany({ courseId }),
-          communityCoursesCollection.deleteOne({ _id: courseId })
+          communityCoursesCollection.deleteOne({ _id: courseId }),
         ]);
       }
     }
@@ -10678,7 +11822,9 @@ app.delete("/admin/posts/:postId", verifyToken, async (req, res) => {
     return res.json({ success: true, message: "Post deleted" });
   } catch (error) {
     console.error("DELETE /admin/posts/:postId error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10686,14 +11832,19 @@ app.delete("/admin/posts/:postId", verifyToken, async (req, res) => {
 app.get("/admin/communities/stats", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     const totalCommunities = await communityCollection.countDocuments({});
-    const verifiedCommunities = await communityCollection.countDocuments({ isVerified: true });
+    const verifiedCommunities = await communityCollection.countDocuments({
+      isVerified: true,
+    });
     const totalPosts = await communityPostsCollection.countDocuments({});
     const totalCourses = await communityCoursesCollection.countDocuments({});
-    const totalEnrollments = await communityEnrollmentsCollection.countDocuments({});
+    const totalEnrollments =
+      await communityEnrollmentsCollection.countDocuments({});
     const totalFollows = await communityFollowsCollection.countDocuments({});
 
     // Get recent communities
@@ -10712,12 +11863,14 @@ app.get("/admin/communities/stats", verifyToken, async (req, res) => {
         totalCourses,
         totalEnrollments,
         totalFollows,
-        recentCommunities
-      }
+        recentCommunities,
+      },
     });
   } catch (error) {
     console.error("GET /admin/communities/stats error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10729,23 +11882,41 @@ app.get("/admin/communities/stats", verifyToken, async (req, res) => {
 app.post("/api/locations", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
-    const { division, district, thana, union, area, coordinates, googleMapsUrl } = req.body;
-    console.log(division, district, thana, union, area, coordinates, googleMapsUrl);
+    const {
+      division,
+      district,
+      thana,
+      union,
+      area,
+      coordinates,
+      googleMapsUrl,
+    } = req.body;
+    console.log(
+      division,
+      district,
+      thana,
+      union,
+      area,
+      coordinates,
+      googleMapsUrl,
+    );
     // Validation
     if (!division || !district || !thana) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Division, district, and thana are required" 
+      return res.status(400).json({
+        success: false,
+        message: "Division, district, and thana are required",
       });
     }
 
     if (!coordinates || !coordinates.lat || !coordinates.lng) {
-      return res.status(400).json({ 
-        success: false, 
-        message: "Valid coordinates (lat, lng) are required" 
+      return res.status(400).json({
+        success: false,
+        message: "Valid coordinates (lat, lng) are required",
       });
     }
 
@@ -10755,13 +11926,13 @@ app.post("/api/locations", verifyToken, async (req, res) => {
       district: district.trim(),
       thana: thana.trim(),
       union: union?.trim() || "",
-      area: area?.trim() || ""
+      area: area?.trim() || "",
     });
 
     if (existingLocation) {
-      return res.status(409).json({ 
-        success: false, 
-        message: "This location already exists" 
+      return res.status(409).json({
+        success: false,
+        message: "This location already exists",
       });
     }
 
@@ -10773,24 +11944,26 @@ app.post("/api/locations", verifyToken, async (req, res) => {
       area: area?.trim() || "",
       coordinates: {
         lat: parseFloat(coordinates.lat),
-        lng: parseFloat(coordinates.lng)
+        lng: parseFloat(coordinates.lng),
       },
       googleMapsUrl: googleMapsUrl || "",
       status: "active",
       createdAt: new Date(),
-      updatedAt: new Date()
+      updatedAt: new Date(),
     };
 
     const result = await locationsCollection.insertOne(newLocation);
-    
-    return res.status(201).json({ 
-      success: true, 
+
+    return res.status(201).json({
+      success: true,
       message: "Location added successfully",
-      data: { ...newLocation, _id: result.insertedId }
+      data: { ...newLocation, _id: result.insertedId },
     });
   } catch (error) {
     console.error("POST /api/locations error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10805,7 +11978,9 @@ app.get("/api/locations", async (req, res) => {
     return res.json({ success: true, data: locations });
   } catch (error) {
     console.error("GET /api/locations error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10820,24 +11995,24 @@ app.get("/api/locations/hierarchy", async (req, res) => {
     // Build hierarchical structure
     const hierarchy = {};
 
-    locations.forEach(location => {
-      const divKey = location.division.toLowerCase().replace(/\s+/g, '');
-      
+    locations.forEach((location) => {
+      const divKey = location.division.toLowerCase().replace(/\s+/g, "");
+
       if (!hierarchy[divKey]) {
         hierarchy[divKey] = {
           name: location.division,
           coordinates: location.coordinates,
-          districts: {}
+          districts: {},
         };
       }
 
-      const distKey = location.district.toLowerCase().replace(/\s+/g, '');
-      
+      const distKey = location.district.toLowerCase().replace(/\s+/g, "");
+
       if (!hierarchy[divKey].districts[distKey]) {
         hierarchy[divKey].districts[distKey] = {
           name: location.district,
           coordinates: location.coordinates,
-          thanas: []
+          thanas: [],
         };
       }
 
@@ -10845,7 +12020,7 @@ app.get("/api/locations/hierarchy", async (req, res) => {
       const thanaData = {
         name: location.thana,
         lat: location.coordinates.lat,
-        lng: location.coordinates.lng
+        lng: location.coordinates.lng,
       };
 
       if (location.union) {
@@ -10862,7 +12037,9 @@ app.get("/api/locations/hierarchy", async (req, res) => {
     return res.json({ success: true, data: { divisions: hierarchy } });
   } catch (error) {
     console.error("GET /api/locations/hierarchy error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10873,19 +12050,25 @@ app.get("/api/locations/:id", async (req, res) => {
     try {
       locationId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid location ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid location ID" });
     }
 
     const location = await locationsCollection.findOne({ _id: locationId });
 
     if (!location) {
-      return res.status(404).json({ success: false, message: "Location not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Location not found" });
     }
 
     return res.json({ success: true, data: location });
   } catch (error) {
     console.error("GET /api/locations/:id error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10893,20 +12076,33 @@ app.get("/api/locations/:id", async (req, res) => {
 app.put("/api/locations/:id", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     let locationId;
     try {
       locationId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid location ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid location ID" });
     }
 
-    const { division, district, thana, union, area, coordinates, googleMapsUrl, status } = req.body;
+    const {
+      division,
+      district,
+      thana,
+      union,
+      area,
+      coordinates,
+      googleMapsUrl,
+      status,
+    } = req.body;
 
     const updateData = {
-      updatedAt: new Date()
+      updatedAt: new Date(),
     };
 
     if (division) updateData.division = division.trim();
@@ -10917,7 +12113,7 @@ app.put("/api/locations/:id", verifyToken, async (req, res) => {
     if (coordinates && coordinates.lat && coordinates.lng) {
       updateData.coordinates = {
         lat: parseFloat(coordinates.lat),
-        lng: parseFloat(coordinates.lng)
+        lng: parseFloat(coordinates.lng),
       };
     }
     if (googleMapsUrl !== undefined) updateData.googleMapsUrl = googleMapsUrl;
@@ -10927,26 +12123,32 @@ app.put("/api/locations/:id", verifyToken, async (req, res) => {
 
     const result = await locationsCollection.updateOne(
       { _id: locationId },
-      { $set: updateData }
+      { $set: updateData },
     );
 
     console.log("Update operation result:", result);
 
     if (result.matchedCount === 0) {
       console.log("No location matched with ID:", req.params.id);
-      return res.status(404).json({ success: false, message: "Location not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Location not found" });
     }
 
-    const updatedLocation = await locationsCollection.findOne({ _id: locationId });
+    const updatedLocation = await locationsCollection.findOne({
+      _id: locationId,
+    });
 
-    return res.json({ 
-      success: true, 
+    return res.json({
+      success: true,
       message: "Location updated successfully",
-      data: updatedLocation
+      data: updatedLocation,
     });
   } catch (error) {
     console.error("PUT /api/locations/:id error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -10954,14 +12156,18 @@ app.put("/api/locations/:id", verifyToken, async (req, res) => {
 app.delete("/api/locations/:id", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     let locationId;
     try {
       locationId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid location ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid location ID" });
     }
 
     console.log("Attempting to delete location with ID:", req.params.id);
@@ -10970,19 +12176,22 @@ app.delete("/api/locations/:id", verifyToken, async (req, res) => {
 
     if (result.deletedCount === 0) {
       console.log("No document found with ID:", req.params.id);
-      return res.status(404).json({ success: false, message: "Location not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Location not found" });
     }
 
-    return res.json({ 
-      success: true, 
-      message: "Location deleted successfully"
+    return res.json({
+      success: true,
+      message: "Location deleted successfully",
     });
   } catch (error) {
     console.error("DELETE /api/locations/:id error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
-
 
 // WALLET SHOP ENDPOINTS
 
@@ -10990,22 +12199,26 @@ app.delete("/api/locations/:id", verifyToken, async (req, res) => {
 app.post("/api/shops", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
-    const { 
-      shopName, 
-      shopImage, 
-      shopCategory, 
-      shopLocationId, 
-      paymentPercentage, 
-      mapLocation, 
-      shopOwnerName, 
-      contactNumber 
+    const {
+      shopName,
+      shopImage,
+      shopCategory,
+      shopLocationId,
+      paymentPercentage,
+      mapLocation,
+      shopOwnerName,
+      contactNumber,
     } = req.body;
 
     if (!shopName || !shopImage || !shopLocationId || !mapLocation) {
-      return res.status(400).json({ success: false, message: "Required fields missing" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Required fields missing" });
     }
 
     const shopData = {
@@ -11016,52 +12229,58 @@ app.post("/api/shops", verifyToken, async (req, res) => {
       paymentPercentage: parseFloat(paymentPercentage) || 0,
       mapLocation: {
         lat: parseFloat(mapLocation.lat),
-        lng: parseFloat(mapLocation.lng)
+        lng: parseFloat(mapLocation.lng),
       },
       shopOwnerName,
       contactNumber,
       status: "active",
       createdAt: new Date(),
-      updatedAt: new Date()
+      updatedAt: new Date(),
     };
 
     const result = await shopsCollection.insertOne(shopData);
-    
-    return res.status(201).json({ 
-      success: true, 
+
+    return res.status(201).json({
+      success: true,
       message: "Shop added successfully",
-      data: { ...shopData, _id: result.insertedId }
+      data: { ...shopData, _id: result.insertedId },
     });
   } catch (error) {
     console.error("POST /api/shops error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
 // Get all shops
 app.get("/api/shops", async (req, res) => {
   try {
-    const shops = await shopsCollection.aggregate([
-      {
-        $lookup: {
-          from: "locationsCollection",
-          localField: "shopLocationId",
-          foreignField: "_id",
-          as: "locationDetails"
-        }
-      },
-      {
-        $unwind: {
-          path: "$locationDetails",
-          preserveNullAndEmptyArrays: true
-        }
-      }
-    ]).toArray();
+    const shops = await shopsCollection
+      .aggregate([
+        {
+          $lookup: {
+            from: "locationsCollection",
+            localField: "shopLocationId",
+            foreignField: "_id",
+            as: "locationDetails",
+          },
+        },
+        {
+          $unwind: {
+            path: "$locationDetails",
+            preserveNullAndEmptyArrays: true,
+          },
+        },
+      ])
+      .toArray();
 
     return res.json({ success: true, data: shops });
   } catch (error) {
     console.error("GET /api/shops error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -11069,41 +12288,47 @@ app.get("/api/shops", async (req, res) => {
 app.put("/api/shops/:id", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     let shopId;
     try {
       shopId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid shop ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid shop ID" });
     }
 
-    const { 
-      shopName, 
-      shopImage, 
-      shopCategory, 
-      shopLocationId, 
-      paymentPercentage, 
-      mapLocation, 
-      shopOwnerName, 
+    const {
+      shopName,
+      shopImage,
+      shopCategory,
+      shopLocationId,
+      paymentPercentage,
+      mapLocation,
+      shopOwnerName,
       contactNumber,
-      status
+      status,
     } = req.body;
 
     const updateData = {
-      updatedAt: new Date()
+      updatedAt: new Date(),
     };
 
     if (shopName) updateData.shopName = shopName;
     if (shopImage) updateData.shopImage = shopImage;
     if (shopCategory) updateData.shopCategory = shopCategory;
-    if (shopLocationId) updateData.shopLocationId = new ObjectId(shopLocationId);
-    if (paymentPercentage !== undefined) updateData.paymentPercentage = parseFloat(paymentPercentage);
+    if (shopLocationId)
+      updateData.shopLocationId = new ObjectId(shopLocationId);
+    if (paymentPercentage !== undefined)
+      updateData.paymentPercentage = parseFloat(paymentPercentage);
     if (mapLocation && mapLocation.lat && mapLocation.lng) {
       updateData.mapLocation = {
         lat: parseFloat(mapLocation.lat),
-        lng: parseFloat(mapLocation.lng)
+        lng: parseFloat(mapLocation.lng),
       };
     }
     if (shopOwnerName) updateData.shopOwnerName = shopOwnerName;
@@ -11112,17 +12337,21 @@ app.put("/api/shops/:id", verifyToken, async (req, res) => {
 
     const result = await shopsCollection.updateOne(
       { _id: shopId },
-      { $set: updateData }
+      { $set: updateData },
     );
 
     if (result.matchedCount === 0) {
-      return res.status(404).json({ success: false, message: "Shop not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Shop not found" });
     }
 
     return res.json({ success: true, message: "Shop updated successfully" });
   } catch (error) {
     console.error("PUT /api/shops/:id error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -11130,26 +12359,34 @@ app.put("/api/shops/:id", verifyToken, async (req, res) => {
 app.delete("/api/shops/:id", verifyToken, async (req, res) => {
   try {
     if (req.user.role !== "admin") {
-      return res.status(403).json({ success: false, message: "Admin access required" });
+      return res
+        .status(403)
+        .json({ success: false, message: "Admin access required" });
     }
 
     let shopId;
     try {
       shopId = new ObjectId(req.params.id);
     } catch {
-      return res.status(400).json({ success: false, message: "Invalid shop ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid shop ID" });
     }
 
     const result = await shopsCollection.deleteOne({ _id: shopId });
 
     if (result.deletedCount === 0) {
-      return res.status(404).json({ success: false, message: "Shop not found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "Shop not found" });
     }
 
     return res.json({ success: true, message: "Shop deleted successfully" });
   } catch (error) {
     console.error("DELETE /api/shops/:id error:", error);
-    return res.status(500).json({ success: false, message: "Internal server error" });
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
   }
 });
 
