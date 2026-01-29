@@ -3044,6 +3044,25 @@ app.post("/users/register", async (req, res) => {
     };
     const result = await usersCollections.insertOne(newUser);
 
+    // If there is a referrer, send a notification to the referrer
+    if (referrerId) {
+      try {
+        const newNotifyReq = {
+          senderId: result.insertedId, // The new user who just joined
+          receoientId: referrerId, // The user who referred them
+          senderProfile: newUser.profileImage,
+          senderName: newUser.name,
+          notifyText: "joined using your affiliate ID! 🎉",
+          type: "referral",
+          isRead: false,
+          timestamp: new Date(),
+        };
+        await notifyCollections.insertOne(newNotifyReq);
+      } catch (notifyError) {
+        console.error("Error creating referral notification:", notifyError);
+      }
+    }
+
     res.send({
       success: true,
       message: "User registered successfully",
