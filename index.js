@@ -1130,6 +1130,7 @@ const cartsCollection = db.collection("cartsCollection");
 const ordersCollection = db.collection("ordersCollection");
 const addressesCollection = db.collection("addressesCollection");
 const withdrawsCollection = db.collection("withdrawsCollection");
+const pointWithdrawCollection = db.collection("pointWithdrawCollection");
 const bannersCollection = db.collection("bannersCollection");
 const communityCollection = db.collection("communityCollection");
 const communityFollowsCollection = db.collection("communityFollowsCollection");
@@ -9565,6 +9566,12 @@ app.post("/seller-withdraw", async (req, res) => {
     const totalWithdrawn = history.reduce((a, h) => a + h.amount, 0);
     const withdrawable = earnings - totalWithdrawn;
 
+    if (amount < 10) {
+      return res
+        .status(400)
+        .json({ message: "Minimum withdrawal amount is 10 BDT" });
+    }
+
     if (amount > withdrawable) {
       console.log("❌ Insufficient Balance:", {
         requested: amount,
@@ -9577,7 +9584,7 @@ app.post("/seller-withdraw", async (req, res) => {
 
     const withdrawRequest = {
       sellerId: seller._id,
-      amount,
+      amount: Number(amount),
       method,
       methodDetails,
       status: "pending", // admin approve করবে
@@ -9609,6 +9616,80 @@ app.get("/seller-withdraw-history", async (req, res) => {
 
     const history = await withdrawsCollection
       .find({ sellerId: seller._id })
+      .sort({ createdAt: -1 })
+      .toArray();
+    res.json({ success: true, history });
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+// User Withdraw request create
+app.post("/user-withdraw", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const { amount, method, methodDetails } = req.body;
+    const currentBalance = Number(user.wallet) || 0;
+    const withdrawAmount = Number(amount);
+
+    if (isNaN(withdrawAmount) || withdrawAmount < 10) {
+      return res
+        .status(400)
+        .json({ message: "Minimum withdrawal amount is 10 points" });
+    }
+
+    if (withdrawAmount > currentBalance) {
+      return res
+        .status(400)
+        .json({ message: "Insufficient flyWallet balance" });
+    }
+
+    const withdrawRequest = {
+      userId: user._id,
+      userName: user.name,
+      userNumber: user.number,
+      amount: Number(amount),
+      method,
+      methodDetails,
+      status: "pending",
+      userType: "general",
+      createdAt: new Date(),
+    };
+
+    // Deduct balance immediately
+    await usersCollections.updateOne(
+      { _id: user._id },
+      { $inc: { flyWallet: -Number(amount) } },
+    );
+
+    await pointWithdrawCollection.insertOne(withdrawRequest);
+    res
+      .status(200)
+      .json({ success: true, message: "Withdraw request submitted" });
+  } catch (err) {
+    console.error("🔥 Error:", err);
+    res.status(500).json({ message: "Internal Server Error" });
+  }
+});
+
+// User Withdraw history get
+app.get("/user-withdraw-history", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const history = await pointWithdrawCollection
+      .find({ userId: user._id, userType: "general" })
       .sort({ createdAt: -1 })
       .toArray();
     res.json({ success: true, history });
@@ -9927,6 +10008,29 @@ app.patch("/admin-products/orders/:orderId/payment", async (req, res) => {
   }
 });
 
+app.get("/admin-wallate-withdrawData", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ message: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user || user.role !== "admin") {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Fetch from both collections
+    const withdrawData = await pointWithdrawCollection
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json({ success: true, withdrawData });
+  } catch (err) {
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
 app.get("/admin-withdrawData", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) return res.status(401).json({ message: "Unauthorized" });
@@ -9937,10 +10041,12 @@ app.get("/admin-withdrawData", async (req, res) => {
     if (!user || user.role !== "admin") {
       return res.status(404).json({ error: "User not found." });
     }
+    // Fetch from both collections
     const withdrawData = await withdrawsCollection
       .find()
       .sort({ createdAt: -1 })
       .toArray();
+
     res.json({ success: true, withdrawData });
   } catch (err) {
     res.status(500).json({ message: "Internal server error" });
@@ -9961,10 +10067,18 @@ app.patch("/admin-withdraw/:withdrawId/status", async (req, res) => {
     const { withdrawId } = req.params;
     const { status } = req.body; // pending, approved, rejected
 
-    const result = await withdrawsCollection.updateOne(
+    // Try updating in both collections
+    let result = await withdrawsCollection.updateOne(
       { _id: new ObjectId(withdrawId) },
       { $set: { status } },
     );
+
+    if (result.modifiedCount === 0) {
+      result = await pointWithdrawCollection.updateOne(
+        { _id: new ObjectId(withdrawId) },
+        { $set: { status } },
+      );
+    }
 
     if (result.modifiedCount === 0) {
       return res.status(404).json({ message: "Withdraw request not found" });
