@@ -1132,6 +1132,7 @@ const addressesCollection = db.collection("addressesCollection");
 const withdrawsCollection = db.collection("withdrawsCollection");
 const pointWithdrawCollection = db.collection("pointWithdrawCollection");
 const bannersCollection = db.collection("bannersCollection");
+const otpCollections = db.collection("otpCollections");
 const communityCollection = db.collection("communityCollection");
 const communityFollowsCollection = db.collection("communityFollowsCollection");
 const communityCoursesCollection = db.collection("communityCoursesCollection");
@@ -2964,12 +2965,226 @@ app.get("/search", async (req, res) => {
   }
 });
 
+// ========================================
+// OTP ENDPOINTS FOR EMAIL VERIFICATION
+// ========================================
+
+// Generate and send OTP to email
+app.post("/users/send-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    // Validate email
+    if (!email || !email.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Email is required",
+      });
+    }
+
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email format",
+      });
+    }
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+
+    // Set OTP expiry (10 minutes from now)
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    // Store OTP in database (replace if exists)
+    await otpCollections.updateOne(
+      { email: email.toLowerCase().trim() },
+      {
+        $set: {
+          email: email.toLowerCase().trim(),
+          otp: otp,
+          expiresAt: expiresAt,
+          createdAt: new Date(),
+          verified: false,
+        },
+      },
+      { upsert: true }
+    );
+
+    // Configure email transporter
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: "flybook24@gmail.com",
+        pass: "rswn cfdm lfpv arci",
+      },
+    });
+
+    // Email template
+    const mailOptions = {
+      from: "FlyBook <flybook24@gmail.com>",
+      to: email,
+      subject: "Your FlyBook Verification Code",
+      html: `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .logo { font-size: 28px; font-weight: bold; margin-bottom: 10px; }
+            .content { background: #ffffff; padding: 40px 30px; border: 1px solid #e5e7eb; }
+            .otp-box { background: #f3f4f6; border: 2px dashed #3B82F6; border-radius: 10px; padding: 20px; text-align: center; margin: 30px 0; }
+            .otp-code { font-size: 36px; font-weight: bold; color: #3B82F6; letter-spacing: 8px; font-family: monospace; }
+            .footer { background: #f9fafb; padding: 20px; text-align: center; font-size: 12px; color: #6b7280; border-radius: 0 0 10px 10px; }
+            .button { display: inline-block; background: #3B82F6; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; margin: 20px 0; }
+            .warning { color: #ef4444; font-size: 14px; margin-top: 20px; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="header">
+              <div class="logo">📚 FlyBook</div>
+              <p style="margin: 0; font-size: 16px;">Your Social Learning Platform</p>
+            </div>
+            
+            <div class="content">
+              <h2 style="color: #1f2937; margin-top: 0;">Verify Your Email Address</h2>
+              <p>Hi there! 👋</p>
+              <p>Thank you for signing up for FlyBook! To complete your registration, please verify your email address by entering the code below:</p>
+              
+              <div class="otp-box">
+                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">Your Verification Code</p>
+                <div class="otp-code">${otp}</div>
+              </div>
+              
+              <p><strong>Important:</strong></p>
+              <ul>
+                <li>This code will expire in <strong>10 minutes</strong></li>
+                <li>Don't share this code with anyone</li>
+                <li>If you didn't request this code, please ignore this email</li>
+              </ul>
+              
+              <p class="warning">⚠️ This is an automated email. Please do not reply.</p>
+            </div>
+            
+            <div class="footer">
+              <p>© 2026 FlyBook - Your Social Learning Platform</p>
+              <p>This email was sent to ${email}</p>
+            </div>
+          </div>
+        </body>
+        </html>
+      `,
+    };
+
+    // Send email
+    await transporter.sendMail(mailOptions);
+
+    console.log(`OTP sent to ${email}: ${otp} (expires at ${expiresAt})`);
+
+    res.status(200).json({
+      success: true,
+      message: "Verification code sent to your email",
+    });
+  } catch (error) {
+    console.error("Error sending OTP:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to send verification code. Please try again.",
+    });
+  }
+});
+
+// Verify OTP
+app.post("/users/verify-otp", async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+
+    // Validate input
+    if (!email || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: "Email and OTP are required",
+      });
+    }
+
+    // Find OTP record
+    const otpRecord = await otpCollections.findOne({
+      email: email.toLowerCase().trim(),
+    });
+
+    if (!otpRecord) {
+      return res.status(404).json({
+        success: false,
+        message: "No verification code found. Please request a new code.",
+      });
+    }
+
+    // Check if OTP is expired
+    if (new Date() > new Date(otpRecord.expiresAt)) {
+      // Delete expired OTP
+      await otpCollections.deleteOne({ email: email.toLowerCase().trim() });
+      return res.status(400).json({
+        success: false,
+        message: "Verification code has expired. Please request a new code.",
+      });
+    }
+
+    // Check if OTP matches
+    if (otpRecord.otp !== otp.toString()) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid verification code. Please try again.",
+      });
+    }
+
+    // Mark as verified
+    await otpCollections.updateOne(
+      { email: email.toLowerCase().trim() },
+      { $set: { verified: true, verifiedAt: new Date() } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Email verified successfully",
+    });
+  } catch (error) {
+    console.error("Error verifying OTP:", error);
+    res.status(500).json({
+      success: false,
+      message: "Failed to verify code. Please try again.",
+    });
+  }
+});
+
 // User Registration Route
 app.post("/users/register", async (req, res) => {
   try {
     const { name, email, number, password, userLocation, referrerUsername } =
       req.body;
     console.log(userLocation);
+
+    // Check if email was verified via OTP (optional check - can be enabled for security)
+    // Uncomment below to enforce email verification
+    /*
+    if (email) {
+      const otpRecord = await otpCollections.findOne({
+        email: email.toLowerCase().trim(),
+        verified: true,
+      });
+      
+      if (!otpRecord) {
+        return res.status(400).send({
+          success: false,
+          message: "Email not verified. Please verify your email first.",
+        });
+      }
+    }
+    */
+
     // Check if user already exists
     const existingUser = await usersCollections.findOne({ number });
     if (existingUser) {
@@ -3064,10 +3279,36 @@ app.post("/users/register", async (req, res) => {
       }
     }
 
+    // Generate JWT token for auto-login
+    const token = jwt.sign(
+      { 
+        id: result.insertedId,
+        email: newUser.email,
+        number: newUser.number,
+      },
+      JWT_SECRET,
+      { expiresIn: "30d" }
+    );
+
+    // Prepare user object (exclude password)
+    const userResponse = {
+      _id: result.insertedId,
+      name: newUser.name,
+      email: newUser.email,
+      number: newUser.number,
+      userName: newUser.userName,
+      profileImage: newUser.profileImage,
+      role: newUser.role,
+      verified: newUser.verificationStatus,
+      coins: newUser.flyWallet,
+      createdAt: newUser.createdAt,
+    };
+
     res.send({
       success: true,
       message: "User registered successfully",
-      data: result,
+      token: token,
+      user: userResponse,
     });
   } catch (error) {
     console.error("Error during registration:", error);
