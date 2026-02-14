@@ -2107,8 +2107,8 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
       });
     }
 
-    // Listening type: pending manual grading
-    if (exam.type === "listening") {
+    // Listening / Speaking type: pending manual grading
+    if (exam.type === "listening" || exam.type === "speaking") {
       const attemptDoc = {
         userId: req.user._id,
         examId: exam._id,
@@ -2214,11 +2214,11 @@ app.post(
         });
       }
 
-      // Only allow grading written/listening types
-      if (!["written", "listening"].includes(exam.type)) {
+      // Only allow grading written/listening/speaking types
+      if (!["written", "listening", "speaking"].includes(exam.type)) {
         return res.status(400).json({
           success: false,
-          message: "Only written/listening attempts require grading",
+          message: "Only written/listening/speaking attempts require grading",
         });
       }
 
@@ -2973,7 +2973,7 @@ app.get("/search", async (req, res) => {
 app.post("/users/send-otp", async (req, res) => {
   try {
     const { email } = req.body;
-
+    console.log(email);
     // Validate email
     if (!email || !email.trim()) {
       return res.status(400).json({
@@ -3009,7 +3009,7 @@ app.post("/users/send-otp", async (req, res) => {
           verified: false,
         },
       },
-      { upsert: true }
+      { upsert: true },
     );
 
     // Configure email transporter
@@ -3144,7 +3144,7 @@ app.post("/users/verify-otp", async (req, res) => {
     // Mark as verified
     await otpCollections.updateOne(
       { email: email.toLowerCase().trim() },
-      { $set: { verified: true, verifiedAt: new Date() } }
+      { $set: { verified: true, verifiedAt: new Date() } },
     );
 
     res.status(200).json({
@@ -3169,13 +3169,13 @@ app.post("/users/register", async (req, res) => {
 
     // Check if email was verified via OTP (optional check - can be enabled for security)
     // Uncomment below to enforce email verification
-    /*
+
     if (email) {
       const otpRecord = await otpCollections.findOne({
         email: email.toLowerCase().trim(),
         verified: true,
       });
-      
+
       if (!otpRecord) {
         return res.status(400).send({
           success: false,
@@ -3183,7 +3183,6 @@ app.post("/users/register", async (req, res) => {
         });
       }
     }
-    */
 
     // Check if user already exists
     const existingUser = await usersCollections.findOne({ number });
@@ -3281,13 +3280,13 @@ app.post("/users/register", async (req, res) => {
 
     // Generate JWT token for auto-login
     const token = jwt.sign(
-      { 
+      {
         id: result.insertedId,
         email: newUser.email,
         number: newUser.number,
       },
       JWT_SECRET,
-      { expiresIn: "30d" }
+      { expiresIn: "30d" },
     );
 
     // Prepare user object (exclude password)
@@ -4897,35 +4896,58 @@ app.post("/friend-request/unfriend", async (req, res) => {
 
 // post opinion rout
 app.post("/opinion/post", async (req, res) => {
-  const { postData } = req.body;
   const token = req.headers.authorization?.split(" ")[1];
   if (!token) {
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    const decoded = jwt.verify(token, jwtSecret);
+
+    // Support both { postData: {...} } and direct {...} in req.body
+    const data = req.body.postData || req.body;
+
+    if (!data || !data.description) {
+      return res.status(400).json({ error: "Post description is required" });
+    }
+
     const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
     const newPost = {
       userId: user._id,
-      userName: user.name,
-      userProfileImage: user.profileImage,
-      image: postData.image,
-      pdf: postData.pdf,
-      description: postData.description,
-      date: postData.date,
-      time: postData.time,
-      privacy: "public",
+      userName: user.name || user.userName || "Anonymous",
+      userProfileImage: user.profileImage || "",
+      image: data.image || "",
+      pdf: data.pdf || "",
+      description: data.description,
+      date: data.date || new Date().toLocaleDateString(),
+      time: data.time || new Date().toLocaleTimeString(),
+      privacy: data.privacy || "public",
+      createdAt: new Date(),
     };
+
     const result = await opinionCollections.insertOne(newPost);
-    res.send({
+    res.status(201).json({
       success: true,
-      message: "User registered successfully",
+      message: "Opinion posted successfully",
       data: result,
     });
   } catch (error) {
-    console.error("JWT Verification Error:", error);
-    res.status(401).json({ error: "Invalid or expired token." });
+    if (
+      error.name === "JsonWebTokenError" ||
+      error.name === "TokenExpiredError"
+    ) {
+      console.error("JWT Verification Error:", error.message);
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+    console.error("Error in /opinion/post:", error);
+    res
+      .status(500)
+      .json({ error: "Internal server error", details: error.message });
   }
 });
 
@@ -5034,7 +5056,8 @@ app.post("/opinion/unlike", async (req, res) => {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    const decoded = jwt.verify(token, jwtSecret);
     const user = await usersCollections.findOne({ number: decoded.number });
     const { postId } = req.body;
 
@@ -5065,6 +5088,52 @@ app.post("/opinion/unlike", async (req, res) => {
       .json({ success: true, message: "Post unliked successfully." });
   } catch (error) {
     console.error("Error unliking post:", error);
+    res.status(401).json({ error: "Invalid or expired token." });
+  }
+});
+
+app.post("/opinion/comment", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    const decoded = jwt.verify(token, jwtSecret);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    const { postId, comment } = req.body;
+
+    if (!postId || !comment?.trim()) {
+      return res
+        .status(400)
+        .json({ error: "Post ID and comment are required." });
+    }
+
+    const commentObj = {
+      userId: user._id,
+      userName: user.name || user.userName || "Anonymous",
+      userProfileImage: user.profileImage || "",
+      comment: comment.trim(),
+      timestamp: new Date(),
+    };
+
+    const result = await opinionCollections.updateOne(
+      { _id: new ObjectId(postId) },
+      { $push: { comments: { $each: [commentObj], $position: 0 } } },
+    );
+
+    if (result.modifiedCount === 0) {
+      return res.status(500).json({ error: "Failed to add comment." });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Comment added successfully.",
+      comment: commentObj,
+    });
+  } catch (error) {
+    console.error("Error submitting comment:", error);
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
@@ -11658,6 +11727,56 @@ process.on("unhandledRejection", (err) => {
 });
 
 // Handle uncaught exceptions
+// Social Responsibility Complaint endpoint
+app.post("/api/social-response/complaint", async (req, res) => {
+  try {
+    const { name, phone, email, location, message, priority } = req.body;
+
+    // Configure email transporter
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: "flybook24@gmail.com",
+        pass: "rswn cfdm lfpv arci",
+      },
+    });
+
+    // Email content
+    const mailOptions = {
+      from: "FlyBook Support <flybook24@gmail.com>",
+      to: "flybook24@gmail.com", // Send to the same email or a specific support email
+      subject: `New Social Responsibility Complaint: ${priority.toUpperCase()}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+          <h2 style="color: #EF4444;">New Social Response Complaint</h2>
+          <p><strong>Name:</strong> ${name}</p>
+          <p><strong>Phone:</strong> ${phone}</p>
+          <p><strong>Email:</strong> ${email || "Not provided"}</p>
+          <p><strong>Location:</strong> ${location || "Not provided"}</p>
+          <p><strong>Priority:</strong> <span style="padding: 2px 8px; border-radius: 4px; background: #FEF2F2; color: #EF4444; font-weight: bold;">${priority.toUpperCase()}</span></p>
+          <div style="margin-top: 20px; padding: 15px; background: #F3F4F6; border-radius: 8px;">
+            <p><strong>Complaint Message:</strong></p>
+            <p>${message}</p>
+          </div>
+          <p style="margin-top: 20px; font-size: 12px; color: #6B7280;">Sent via FlyBook Social Responsibility Services</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.json({
+      success: true,
+      message: "Complaint submitted and email sent successfully",
+    });
+  } catch (error) {
+    console.error("Social Response Complaint Error:", error);
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to process complaint" });
+  }
+});
+
 process.on("uncaughtException", (err) => {
   console.error("Uncaught Exception:", err);
   process.exit(1);
