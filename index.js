@@ -1,4 +1,5 @@
 const express = require("express");
+const admin = require("firebase-admin");
 const cors = require("cors");
 const compression = require("compression");
 const bcrypt = require("bcryptjs");
@@ -1111,6 +1112,121 @@ if (!JWT_SECRET) {
   console.error("⚠️  Authentication will fail without this variable.");
 }
 
+// ============================================
+// FIREBASE ADMIN INITIALIZATION
+// ============================================
+let firebaseApp;
+try {
+  // Try to load the service account key from a local file
+  // The user should place this file in the root directory
+  const serviceAccount = require("/etc/secrets/firebase-service-account.json");
+  firebaseApp = admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount),
+  });
+  console.log("✅ Firebase Admin initialized successfully");
+} catch (error) {
+  console.warn(
+    "⚠️ Firebase Admin initialization bypassed: firebase-service-account.json not found or invalid.",
+  );
+}
+
+/**
+ * Helper: Send Push Notification to a single user
+ */
+const sendPushNotification = async (userId, title, body, data = {}) => {
+  // Always save to database for in-app notification history
+  try {
+    const newNotify = {
+      receoientId: new ObjectId(userId),
+      title,
+      body,
+      data,
+      isRead: false,
+      timestamp: new Date(),
+    };
+    await notifyCollections.insertOne(newNotify);
+
+    // If socket.io is available, emit for real-time UI update
+    if (global.io) {
+      global.io.to(userId.toString()).emit("newNotification", newNotify);
+    }
+  } catch (err) {
+    console.error("❌ DB: Error saving notification:", err.message);
+  }
+
+  if (!firebaseApp) {
+    console.warn(
+      "⚠️ FCM: Cannot send notification, Firebase Admin not initialized.",
+    );
+    return;
+  }
+  try {
+    const user = await usersCollections.findOne({ _id: new ObjectId(userId) });
+    if (user && user.fcmToken) {
+      console.log(
+        `🔍 FCM: Sending to User: ${userId}, Token: ${user.fcmToken.substring(0, 15)}...`,
+      );
+      const message = {
+        token: user.fcmToken,
+        notification: {
+          title: title,
+          body: body,
+        },
+        android: {
+          priority: "high",
+          notification: {
+            channel_id: "high_priority_channel",
+            notification_priority: "PRIORITY_MAX",
+            defaultSound: true,
+            sound: "default",
+            defaultVibrateTimings: true,
+            visibility: "public",
+          },
+        },
+        data: {
+          ...data,
+          title: title,
+          body: body,
+        },
+      };
+      await admin.messaging().send(message);
+      console.log(`🚀 FCM: Message accepted by Google for userId: ${userId}`);
+    }
+  } catch (error) {
+    console.error("❌ FCM: Error sending notification:", error.message);
+  }
+};
+
+/**
+ * Endpoint: Update FCM Token for authenticated user
+ */
+app.put("/api/update-fcm-token", verifyTokenEarly, async (req, res) => {
+  const { fcmToken } = req.body;
+  const userId = req.user._id;
+
+  if (!fcmToken) {
+    return res
+      .status(400)
+      .json({ success: false, message: "fcmToken is required" });
+  }
+
+  try {
+    const result = await usersCollections.updateOne(
+      { _id: new ObjectId(userId) },
+      { $set: { fcmToken: fcmToken, lastTokenUpdate: new Date() } },
+    );
+
+    if (result.matchedCount > 0) {
+      res.json({ success: true, message: "FCM token updated" });
+    } else {
+      res.status(404).json({ success: false, message: "User not found" });
+    }
+  } catch (error) {
+    console.error("❌ Error updating FCM token:", error);
+    res.status(500).json({ success: false, message: "Failed to update token" });
+  }
+});
+
 if (!process.env.DB_USER || !process.env.DB_PASS) {
   console.error(
     "⚠️  WARNING: DB_USER or DB_PASS is not set in environment variables!",
@@ -1167,6 +1283,7 @@ const proposalsCollection = db.collection("proposalsCollection");
 // Locations collection for wallate shop
 const locationsCollection = db.collection("locationsCollection");
 const shopsCollection = db.collection("shopsCollection");
+const reportCollections = db.collection("reportCollections");
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -1648,10 +1765,30 @@ app.post("/posts/:postId/like", verifyTokenEarly, async (req, res) => {
         userId: req.user._id,
         createdAt: new Date(),
       });
-      await communityPostsCollection.updateOne(
+      const result = await communityPostsCollection.updateOne(
         { _id: postObjId },
         { $inc: { likesCount: 1 } },
       );
+
+      // Notify post owner
+      if (result.matchedCount > 0) {
+        const postDoc = await communityPostsCollection.findOne({
+          _id: postObjId,
+        });
+        if (
+          postDoc &&
+          postDoc.userId &&
+          postDoc.userId.toString() !== req.user._id.toString()
+        ) {
+          sendPushNotification(
+            postDoc.userId,
+            "New Like!",
+            `${req.user.name || "Someone"} liked your post.`,
+            { postId: req.params.postId, type: "LIKE" },
+          );
+        }
+      }
+
       return res.json({ success: true, liked: true });
     }
   } catch (error) {
@@ -3679,6 +3816,528 @@ app.put("/profile/updateDetails", async (req, res) => {
     res.status(500).json({ error: "Failed to update profile details." });
   }
 });
+// Update Name (15 days restriction)
+app.put("/api/user/update-name", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { firstName, lastName } = req.body;
+
+    if (!firstName || !lastName) {
+      return res
+        .status(400)
+        .json({ error: "First name and Last name are required" });
+    }
+
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Check 15 days restriction
+    const lastChange = user.lastNameChange
+      ? new Date(user.lastNameChange)
+      : new Date(0);
+    const fifteenDaysInMs = 15 * 24 * 60 * 60 * 1000;
+    const now = new Date();
+
+    if (now - lastChange < fifteenDaysInMs) {
+      const daysLeft = Math.ceil(
+        (fifteenDaysInMs - (now - lastChange)) / (24 * 60 * 60 * 1000),
+      );
+      return res
+        .status(400)
+        .json({ error: `You can change your name again in ${daysLeft} days.` });
+    }
+
+    const fullName = `${firstName} ${lastName}`.trim();
+
+    await usersCollections.updateOne(
+      { number: decoded.number },
+      { $set: { name: fullName, lastNameChange: new Date() } },
+    );
+
+    res.json({ success: true, message: "Name updated successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Email (Requires OTP verification)
+app.put("/api/user/update-email", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { email } = req.body;
+
+    if (!email) return res.status(400).json({ error: "Email is required" });
+
+    // Verify if OTP was verified for this new email
+    const otpRecord = await otpCollections.findOne({
+      email: email.toLowerCase().trim(),
+      verified: true,
+    });
+
+    if (!otpRecord) {
+      return res
+        .status(400)
+        .json({ error: "Please verify your new email address first." });
+    }
+
+    // Check if email already exists
+    const existing = await usersCollections.findOne({
+      email: email.toLowerCase().trim(),
+    });
+    if (existing && existing.number !== decoded.number) {
+      return res
+        .status(400)
+        .json({ error: "Email already in use by another account" });
+    }
+
+    await usersCollections.updateOne(
+      { number: decoded.number },
+      { $set: { email: email.toLowerCase().trim() } },
+    );
+
+    // Common: Clean up OTP record
+    await otpCollections.deleteOne({ email: email.toLowerCase().trim() });
+
+    res.json({ success: true, message: "Email updated successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update Phone
+app.put("/api/user/update-phone", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { number } = req.body;
+
+    if (!number)
+      return res.status(400).json({ error: "Phone number is required" });
+
+    const existing = await usersCollections.findOne({ number });
+    if (existing)
+      return res.status(400).json({ error: "Phone number already in use" });
+
+    await usersCollections.updateOne(
+      { number: decoded.number },
+      { $set: { number: number } },
+    );
+
+    const user = await usersCollections.findOne({ number });
+    const newToken = jwt.sign(
+      { id: user._id, email: user.email, number: user.number },
+      JWT_SECRET,
+      { expiresIn: "30d" },
+    );
+
+    res.json({
+      success: true,
+      message: "Phone number updated",
+      token: newToken,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Professional Account Status (Deactivate/Delete - Soft)
+// Get Public User Profile
+app.get("/api/user-profile/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    jwt.verify(token, JWT_SECRET); // Basic auth check
+
+    if (!ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: "Invalid user ID" });
+    }
+
+    const user = await usersCollections.findOne(
+      { _id: new ObjectId(userId) },
+      {
+        projection: {
+          name: 1,
+          userName: 1,
+          profileImage: 1,
+          coverImage: 1,
+          email: 1,
+          shortBio: 1,
+          bio: 1,
+          location: 1,
+          work: 1,
+          education: 1,
+          phone: 1,
+          studies: 1,
+          dateOfBirth: 1,
+          website: 1,
+          hometown: 1,
+          relationshipStatus: 1,
+          friends: 1,
+        },
+      },
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    // Count book collections owned by this user
+    const bookCollectionsCount = await bookCollections.countDocuments({
+      userId: userId,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        ...user,
+        friendsCount: (user.friends || []).length,
+        bookCollectionsCount: bookCollectionsCount,
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching user profile:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// Report Profile Endpoint
+app.post("/api/report-profile", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const reporter = await usersCollections.findOne({ number: decoded.number });
+
+    if (!reporter) {
+      return res.status(404).json({ error: "Reporter not found" });
+    }
+
+    const { reportedUserId, reason, description } = req.body;
+
+    if (!reportedUserId || !reason || !description) {
+      return res.status(400).json({
+        error: "Reported user ID, reason, and description are required",
+      });
+    }
+
+    if (!ObjectId.isValid(reportedUserId)) {
+      return res.status(400).json({ error: "Invalid user ID" });
+    }
+
+    const reportedUser = await usersCollections.findOne(
+      { _id: new ObjectId(reportedUserId) },
+      { projection: { name: 1, userName: 1, email: 1, profileImage: 1 } },
+    );
+
+    if (!reportedUser) {
+      return res.status(404).json({ error: "Reported user not found" });
+    }
+
+    // Save report to database
+    const reportData = {
+      reporterId: reporter._id,
+      reporterName: reporter.name,
+      reporterEmail: reporter.email || "",
+      reportedUserId: new ObjectId(reportedUserId),
+      reportedUserName: reportedUser.name,
+      reportedUserEmail: reportedUser.email || "",
+      reason: reason,
+      description: description,
+      status: "pending",
+      createdAt: new Date(),
+      date: new Date().toLocaleDateString("en-GB"),
+      time: new Date().toLocaleTimeString("en-US", { hour12: true }),
+    };
+
+    const result = await reportCollections.insertOne(reportData);
+
+    // Send email notification to FlyBook
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: "flybook24@gmail.com",
+        pass: "rswn cfdm lfpv arci",
+      },
+    });
+
+    const mailOptions = {
+      from: "FlyBook Report System <flybook24@gmail.com>",
+      to: "flybook24@gmail.com",
+      subject: `🚨 Profile Report: ${reportedUser.name} - ${reason}`,
+      html: `
+        <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: auto; background: #ffffff; border-radius: 16px; overflow: hidden; border: 1px solid #e5e7eb;">
+          
+          <!-- Header -->
+          <div style="background: linear-gradient(135deg, #EF4444, #DC2626); padding: 30px 24px; text-align: center;">
+            <h1 style="color: #fff; margin: 0; font-size: 24px;">🚨 Profile Report</h1>
+            <p style="color: rgba(255,255,255,0.85); margin: 8px 0 0; font-size: 14px;">A new profile report has been submitted</p>
+          </div>
+
+          <!-- Report Details -->
+          <div style="padding: 28px 24px;">
+            
+            <!-- Reason Badge -->
+            <div style="text-align: center; margin-bottom: 24px;">
+              <span style="background: #FEF2F2; color: #DC2626; padding: 8px 20px; border-radius: 20px; font-weight: 600; font-size: 14px; display: inline-block;">
+                ${reason}
+              </span>
+            </div>
+
+            <!-- Reported User -->
+            <div style="background: #F9FAFB; border-radius: 12px; padding: 18px; margin-bottom: 16px; border-left: 4px solid #EF4444;">
+              <p style="margin: 0 0 4px; font-size: 12px; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.5px;">Reported User</p>
+              <p style="margin: 0 0 2px; font-size: 18px; font-weight: 700; color: #111827;">${reportedUser.name}</p>
+              <p style="margin: 0; font-size: 13px; color: #6B7280;">Email: ${reportedUser.email || "N/A"}</p>
+              <p style="margin: 0; font-size: 13px; color: #6B7280;">ID: ${reportedUserId}</p>
+            </div>
+
+            <!-- Reporter -->
+            <div style="background: #F9FAFB; border-radius: 12px; padding: 18px; margin-bottom: 16px; border-left: 4px solid #3B82F6;">
+              <p style="margin: 0 0 4px; font-size: 12px; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.5px;">Reported By</p>
+              <p style="margin: 0 0 2px; font-size: 18px; font-weight: 700; color: #111827;">${reporter.name}</p>
+              <p style="margin: 0; font-size: 13px; color: #6B7280;">Email: ${reporter.email || "N/A"}</p>
+              <p style="margin: 0; font-size: 13px; color: #6B7280;">ID: ${reporter._id}</p>
+            </div>
+
+            <!-- Description -->
+            <div style="background: #FFFBEB; border-radius: 12px; padding: 18px; margin-bottom: 16px; border-left: 4px solid #F59E0B;">
+              <p style="margin: 0 0 8px; font-size: 12px; color: #9CA3AF; text-transform: uppercase; letter-spacing: 0.5px;">Description</p>
+              <p style="margin: 0; font-size: 15px; color: #374151; line-height: 1.6;">${description}</p>
+            </div>
+
+            <!-- Metadata -->
+            <div style="display: flex; justify-content: space-between; padding: 14px 0; border-top: 1px solid #F3F4F6;">
+              <div>
+                <p style="margin: 0; font-size: 12px; color: #9CA3AF;">Report ID</p>
+                <p style="margin: 0; font-size: 13px; color: #374151; font-weight: 600;">${result.insertedId}</p>
+              </div>
+              <div style="text-align: right;">
+                <p style="margin: 0; font-size: 12px; color: #9CA3AF;">Submitted</p>
+                <p style="margin: 0; font-size: 13px; color: #374151; font-weight: 600;">${reportData.date} at ${reportData.time}</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div style="background: #F9FAFB; padding: 16px 24px; text-align: center; border-top: 1px solid #E5E7EB;">
+            <p style="margin: 0; font-size: 12px; color: #9CA3AF;">FlyBook Report System • Please review and take appropriate action</p>
+          </div>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    res.json({
+      success: true,
+      message: "Report submitted successfully",
+      reportId: result.insertedId,
+    });
+  } catch (error) {
+    console.error("Error submitting report:", error);
+    res
+      .status(500)
+      .json({ error: "Failed to submit report. Please try again." });
+  }
+});
+
+app.put("/api/user/update-status", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { status } = req.body; // 'active', 'deactivated', 'deleted'
+
+    if (!["active", "deactivated", "deleted"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status" });
+    }
+
+    await usersCollections.updateOne(
+      { number: decoded.number },
+      {
+        $set: {
+          accountStatus: status,
+          statusUpdatedAt: new Date(),
+        },
+      },
+    );
+
+    res.json({ success: true, message: `Account ${status} successfully` });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Change Password (Authenticated)
+app.put("/api/user/change-password", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { oldPassword, newPassword } = req.body;
+
+    if (!oldPassword || !newPassword) {
+      return res
+        .status(400)
+        .json({ error: "Old and new passwords are required" });
+    }
+
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const isMatch = await bcrypt.compare(oldPassword, user.password);
+    if (!isMatch) {
+      return res.status(400).json({ error: "Current password is incorrect" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await usersCollections.updateOne(
+      { number: decoded.number },
+      { $set: { password: hashedPassword } },
+    );
+
+    res.json({ success: true, message: "Password updated successfully" });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Forgot Password - Send OTP
+app.post("/api/user/forgot-password-otp", async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email)
+      return res
+        .status(400)
+        .json({ success: false, message: "Email is required" });
+
+    const user = await usersCollections.findOne({
+      email: email.toLowerCase().trim(),
+    });
+    if (!user)
+      return res
+        .status(404)
+        .json({ success: false, message: "No account found with this email" });
+
+    // Generate 6-digit OTP
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 mins
+
+    await otpCollections.updateOne(
+      { email: email.toLowerCase().trim() },
+      {
+        $set: {
+          email: email.toLowerCase().trim(),
+          otp: otp,
+          expiresAt: expiresAt,
+          createdAt: new Date(),
+          verified: false,
+        },
+      },
+      { upsert: true },
+    );
+
+    // Reuse transporter config from existing send-otp
+    const transporter = nodemailer.createTransport({
+      service: "gmail",
+      auth: {
+        user: "flybook24@gmail.com",
+        pass: "rswn cfdm lfpv arci",
+      },
+    });
+
+    const mailOptions = {
+      from: "FlyBook Security <flybook24@gmail.com>",
+      to: email,
+      subject: "Password Reset Code - FlyBook",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+          <h2 style="color: #3B82F6; text-align: center;">FlyBook Security</h2>
+          <p>We received a request to reset your password. Use the code below to proceed:</p>
+          <div style="background: #f4f7ff; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
+            <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1e40af;">${otp}</span>
+          </div>
+          <p style="font-size: 13px; color: #666;">This code will expire in 10 minutes. If you didn't request this, please ignore this email.</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+    res.json({ success: true, message: "Reset code sent to your email" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Forgot Password - Reset with OTP
+app.post("/api/user/reset-password-otp", async (req, res) => {
+  try {
+    const { email, otp, newPassword } = req.body;
+
+    if (!email || !otp || !newPassword) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing required fields" });
+    }
+
+    const otpRecord = await otpCollections.findOne({
+      email: email.toLowerCase().trim(),
+      otp: otp.toString(),
+    });
+
+    if (!otpRecord) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid verification code" });
+    }
+
+    if (new Date() > new Date(otpRecord.expiresAt)) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Code has expired" });
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const result = await usersCollections.updateOne(
+      { email: email.toLowerCase().trim() },
+      { $set: { password: hashedPassword } },
+    );
+
+    if (result.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    // Clean up OTP
+    await otpCollections.deleteOne({ email: email.toLowerCase().trim() });
+
+    res.json({ success: true, message: "Password reset successful" });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Coin Transfer Endpoint
 app.post("/api/transfer-coins", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
@@ -4849,6 +5508,59 @@ app.get("/all-friends", async (req, res) => {
   }
 });
 
+// Get friends list of any user by userId
+app.get("/api/user-friends/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    jwt.verify(token, JWT_SECRET);
+
+    if (!ObjectId.isValid(userId)) {
+      return res.status(400).json({ error: "Invalid user ID" });
+    }
+
+    const user = await usersCollections.findOne(
+      { _id: new ObjectId(userId) },
+      { projection: { friends: 1, name: 1 } },
+    );
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const friendsIds = user.friends || [];
+
+    if (!friendsIds.length) {
+      return res.json({ success: true, data: [], userName: user.name });
+    }
+
+    const friends = await usersCollections
+      .find({
+        _id: { $in: friendsIds.map((id) => new ObjectId(id)) },
+      })
+      .project({
+        name: 1,
+        userName: 1,
+        profileImage: 1,
+        bio: 1,
+        shortBio: 1,
+        work: 1,
+        studies: 1,
+      })
+      .toArray();
+
+    res.json({ success: true, data: friends || [], userName: user.name });
+  } catch (error) {
+    console.error("Error fetching user friends:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 app.post("/friend-request/unfriend", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
   const { friendId } = req.body;
@@ -4953,19 +5665,88 @@ app.post("/opinion/post", async (req, res) => {
 
 app.get("/opinion/posts", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-  console.log("post token", token);
   if (!token) {
-    console.log("dbcjsdcnvs.");
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const posts = await opinionCollections.find().toArray();
+    jwt.verify(token, JWT_SECRET);
+    const posts = await opinionCollections
+      .find()
+      .sort({ createdAt: -1 })
+      .toArray();
     res.status(200).json({ success: true, data: posts });
   } catch (error) {
     console.error("Token validation error:", error.message || error);
     res.status(401).json({ error: "Invalid or expired token." });
+  }
+});
+
+// Optimized fast-posts endpoint for opinions
+app.get("/api/opinion/fast-posts", async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
+
+  try {
+    const token = req.headers.authorization?.split(" ")[1];
+    if (!token) {
+      return res
+        .status(401)
+        .json({ error: "Access denied. No token provided." });
+    }
+
+    jwt.verify(token, JWT_SECRET); // Basic token check
+
+    await connectToMongo();
+    if (!opinionCollections) {
+      return res.status(500).json({ error: "Opinion collection not found" });
+    }
+
+    const { userId } = req.query;
+    let query = {};
+    if (userId) {
+      if (ObjectId.isValid(userId)) {
+        query = { userId: new ObjectId(userId) };
+      } else {
+        // Fallback for string userId if any (though usually ObjectId)
+        query = { userId };
+      }
+    }
+
+    const posts = await opinionCollections
+      .find(query, {
+        projection: {
+          _id: 1,
+          userId: 1,
+          userName: 1,
+          userProfileImage: 1,
+          description: 1,
+          image: 1,
+          pdf: 1,
+          likes: 1,
+          likedBy: 1,
+          comments: 1,
+          date: 1,
+          time: 1,
+          createdAt: 1,
+          privacy: 1,
+        },
+      })
+      .sort({ createdAt: -1 }) // Users requested latest posts first
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    res.json({
+      success: true,
+      data: posts,
+      hasMore: posts.length === limit,
+      page,
+    });
+  } catch (error) {
+    console.error("Opinion fast-posts error:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -5037,6 +5818,16 @@ app.post("/opinion/like", async (req, res) => {
 
     if (updatedPost.modifiedCount === 0) {
       return res.status(500).json({ error: "Failed to like the post." });
+    }
+
+    // Notify post owner
+    if (post.userId && post.userId.toString() !== user._id.toString()) {
+      sendPushNotification(
+        post.userId,
+        "Opinion Liked!",
+        `${user.name || "Someone"} liked your opinion.`,
+        { postId: postId, type: "OPINION_LIKE" },
+      );
     }
 
     res
@@ -5125,6 +5916,19 @@ app.post("/opinion/comment", async (req, res) => {
 
     if (result.modifiedCount === 0) {
       return res.status(500).json({ error: "Failed to add comment." });
+    }
+
+    // Notify post owner
+    const post = await opinionCollections.findOne({
+      _id: new ObjectId(postId),
+    });
+    if (post && post.userId && post.userId.toString() !== user._id.toString()) {
+      sendPushNotification(
+        post.userId,
+        "New Opinion Comment!",
+        `${user.name || "Someone"} commented on your opinion: "${comment.substring(0, 30)}${comment.length > 30 ? "..." : ""}"`,
+        { postId: postId, type: "OPINION_COMMENT" },
+      );
     }
 
     res.status(200).json({
@@ -6426,6 +7230,7 @@ app.get("/all-home-books", async (req, res) => {
             userImage: 1,
             likes: 1,
             likedBy: 1,
+            comments: 1,
             createdAt: 1,
           },
         })
@@ -6456,6 +7261,7 @@ app.get("/all-home-books", async (req, res) => {
           userImage: post.userImage,
           likes: post.likes || 0,
           likedBy: post.likedBy || [],
+          comments: post.comments || [],
           createdAt: post.createdAt,
         };
       });
@@ -6468,6 +7274,87 @@ app.get("/all-home-books", async (req, res) => {
   } catch (error) {
     console.error("Error fetching posts:", error.message || error);
     res.json([]); // Return empty array on error
+  }
+});
+
+// Optimized fast-posts endpoint for mobile app
+app.get("/api/home/fast-posts", async (req, res) => {
+  const page = parseInt(req.query.page) || 1;
+  const limit = parseInt(req.query.limit) || 10;
+  const skip = (page - 1) * limit;
+  const { category } = req.query;
+
+  try {
+    await connectToMongo();
+    if (!adminPostCollections) {
+      return res
+        .status(500)
+        .json({ error: "Database collections not initialized" });
+    }
+
+    let query = {};
+    if (category && category !== "All") {
+      query.category = category;
+    }
+
+    const posts = await adminPostCollections
+      .find(query, {
+        projection: {
+          _id: 1,
+          postText: 1,
+          message: 1,
+          content: 1,
+          text: 1,
+          postImage: 1,
+          image: 1,
+          imageUrl: 1,
+          photo: 1,
+          title: 1,
+          heading: 1,
+          category: 1,
+          date: 1,
+          time: 1,
+          likes: 1,
+          likedBy: 1,
+          comments: 1,
+          createdAt: 1,
+        },
+      })
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .toArray();
+
+    const mappedPosts = posts.map((post) => {
+      const textContent =
+        post.postText || post.message || post.content || post.text || "";
+      const imageUrl =
+        post.postImage || post.image || post.imageUrl || post.photo || "";
+      const postTitle = post.title || post.heading || "Untitled";
+
+      return {
+        _id: post._id,
+        title: postTitle,
+        postText: textContent,
+        postImage: imageUrl,
+        category: post.category,
+        date: post.date,
+        time: post.time,
+        likes: post.likes || 0,
+        likedBy: post.likedBy || [],
+        comments: post.comments || [], // Return empty array if no comments
+        createdAt: post.createdAt,
+      };
+    });
+
+    res.json({
+      posts: mappedPosts,
+      hasMore: mappedPosts.length === limit,
+      page,
+    });
+  } catch (error) {
+    console.error("Fast-posts error:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -6576,6 +7463,16 @@ app.post("/admin-post/comment", async (req, res) => {
       return res.status(500).json({ error: "Failed to add comment." });
     }
 
+    // Notify post owner
+    if (post.userId && post.userId.toString() !== user._id.toString()) {
+      sendPushNotification(
+        post.userId,
+        "New Comment!",
+        `${user.name || "Someone"} commented on your post: "${comment.substring(0, 30)}${comment.length > 30 ? "..." : ""}"`,
+        { postId: postId, type: "COMMENT" },
+      );
+    }
+
     res.status(200).json({
       success: true,
       message: "Comment added successfully.",
@@ -6644,8 +7541,8 @@ app.post("/api/send-message", async (req, res) => {
       return res.status(404).json({ error: "User Not Found." });
     }
 
-    const senderObjectId = ObjectId(senderId);
-    const receoientObjectId = ObjectId(receoientId);
+    const senderObjectId = new ObjectId(senderId);
+    const receoientObjectId = new ObjectId(receoientId);
     const newMessage = {
       senderId: senderObjectId,
       receoientId: receoientObjectId,
@@ -6653,6 +7550,17 @@ app.post("/api/send-message", async (req, res) => {
       timestamp: new Date(),
     };
     const result = await messagesCollections.insertOne(newMessage);
+
+    // Notify recipient
+    if (receoientId && receoientId.toString() !== user._id.toString()) {
+      sendPushNotification(
+        receoientId,
+        `New message from ${user.name || user.number}`,
+        messageText.substring(0, 50) + (messageText.length > 50 ? "..." : ""),
+        { senderId: user._id.toString(), type: "MESSAGE" },
+      );
+    }
+
     res.send({
       success: true,
       message: "posted successfully",
@@ -11799,6 +12707,8 @@ const io = new Server(server, {
   transports: ["websocket", "polling"], // Enable both transports
   allowEIO3: true, // Enable compatibility with older clients
 });
+
+global.io = io;
 
 app.set("io", io);
 
