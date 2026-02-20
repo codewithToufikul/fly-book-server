@@ -1119,7 +1119,7 @@ let firebaseApp;
 try {
   // Try to load the service account key from a local file
   // The user should place this file in the root directory
-  const serviceAccount = require("./firebase-service-account.json");
+  const serviceAccount = require("/etc/secrets/firebase-service-account.json");
   firebaseApp = admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
@@ -1476,6 +1476,24 @@ let streamClient = null;
 if (streamApiKey && streamApiSecret) {
   streamClient = new StreamClient(streamApiKey, streamApiSecret);
   console.log("✅ Stream Video client initialized");
+
+  (async () => {
+    try {
+      await streamClient.video.updateCallType({
+        name: "default",
+        settings: {
+          ring: {
+            incoming_call_timeout_ms: 30000,
+            auto_cancel_timeout_ms: 30000,
+            missed_call_timeout_ms: 30000,
+          },
+        },
+      });
+      console.log("✅ Stream call type 'default' configured: 30s ring timeout");
+    } catch (err) {
+      console.warn("⚠️ Could not update Stream call type settings:", err.message);
+    }
+  })();
 } else {
   console.warn("⚠️ STREAM_API_KEY or STREAM_API_SECRET not set — video calling disabled");
 }
@@ -1545,6 +1563,56 @@ app.post("/api/stream/ensure-users", verifyTokenEarly, async (req, res) => {
     res.status(500).json({ success: false, message: "Failed to sync users with Stream" });
   }
 });
+
+app.post("/api/call-history", verifyTokenEarly, async (req, res) => {
+  try {
+    const { callerId, calleeId, callType, status, duration } = req.body;
+    if (!callerId || !calleeId) {
+      return res.status(400).json({ success: false, message: "callerId and calleeId required" });
+    }
+
+    const callerObjId = new ObjectId(callerId);
+    const calleeObjId = new ObjectId(calleeId);
+
+    const callMessage = {
+      senderId: callerObjId,
+      receoientId: calleeObjId,
+      messageText: status === 'completed'
+        ? `${callType === 'video' ? 'Video' : 'Audio'} call · ${formatCallDuration(duration || 0)}`
+        : status === 'missed'
+          ? `Missed ${callType === 'video' ? 'video' : 'audio'} call`
+          : `${callType === 'video' ? 'Video' : 'Audio'} call declined`,
+      messageType: "call",
+      callData: { callType, status, duration: duration || 0 },
+      isRead: false,
+      timestamp: new Date(),
+    };
+
+    await messagesCollections.insertOne(callMessage);
+
+    const roomId = [callerId, calleeId].sort().join("-");
+    io.to(roomId).emit("receiveMessage", {
+      _id: callMessage._id || new ObjectId(),
+      senderId: callerId,
+      messageText: callMessage.messageText,
+      messageType: "call",
+      callData: callMessage.callData,
+      timestamp: callMessage.timestamp,
+    });
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Call history error:", error);
+    res.status(500).json({ success: false, message: "Failed to save call history" });
+  }
+});
+
+function formatCallDuration(seconds) {
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return secs > 0 ? `${mins}m ${secs}s` : `${mins}m`;
+}
 
 // =====================
 // Community: Posts, Courses, Exams, Certificates
