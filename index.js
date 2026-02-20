@@ -1119,7 +1119,7 @@ let firebaseApp;
 try {
   // Try to load the service account key from a local file
   // The user should place this file in the root directory
-  const serviceAccount = require("/etc/secrets/firebase-service-account.json");
+  const serviceAccount = require("./firebase-service-account.json");
   firebaseApp = admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
@@ -1133,25 +1133,34 @@ try {
 /**
  * Helper: Send Push Notification to a single user
  */
-const sendPushNotification = async (userId, title, body, data = {}) => {
-  // Always save to database for in-app notification history
-  try {
-    const newNotify = {
-      receoientId: new ObjectId(userId),
-      title,
-      body,
-      data,
-      isRead: false,
-      timestamp: new Date(),
-    };
-    await notifyCollections.insertOne(newNotify);
+const sendPushNotification = async (
+  userId,
+  title,
+  body,
+  data = {},
+  skipDb = false,
+) => {
+  if (!skipDb) {
+    try {
+      const newNotify = {
+        receoientId: new ObjectId(userId),
+        title,
+        body,
+        data,
+        type: data?.type || '',
+        senderId: data?.senderId || '',
+        senderName: data?.senderName || '',
+        isRead: false,
+        timestamp: new Date(),
+      };
+      await notifyCollections.insertOne(newNotify);
 
-    // If socket.io is available, emit for real-time UI update
-    if (global.io) {
-      global.io.to(userId.toString()).emit("newNotification", newNotify);
+      if (global.io) {
+        global.io.to(userId.toString()).emit("newNotification", newNotify);
+      }
+    } catch (err) {
+      console.error("❌ DB: Error saving notification:", err.message);
     }
-  } catch (err) {
-    console.error("❌ DB: Error saving notification:", err.message);
   }
 
   if (!firebaseApp) {
@@ -1453,6 +1462,88 @@ app.get("/diagnostics", async (req, res) => {
   }
 
   res.json(diagnostics);
+});
+
+// =====================
+// Stream Video (Audio/Video Calling)
+// =====================
+const { StreamClient } = require("@stream-io/node-sdk");
+
+const streamApiKey = process.env.STREAM_API_KEY;
+const streamApiSecret = process.env.STREAM_API_SECRET;
+let streamClient = null;
+
+if (streamApiKey && streamApiSecret) {
+  streamClient = new StreamClient(streamApiKey, streamApiSecret);
+  console.log("✅ Stream Video client initialized");
+} else {
+  console.warn("⚠️ STREAM_API_KEY or STREAM_API_SECRET not set — video calling disabled");
+}
+
+app.get("/api/stream/token", verifyTokenEarly, async (req, res) => {
+  try {
+    if (!streamClient) {
+      return res.status(503).json({ success: false, message: "Video calling is not configured" });
+    }
+
+    const user = req.user;
+    const userId = user._id.toString();
+
+    await streamClient.upsertUsers([{
+      id: userId,
+      name: user.name || user.number || "User",
+      image: user.profileImage || "",
+      role: "user",
+    }]);
+
+    const token = streamClient.generateUserToken({ user_id: userId });
+
+    res.json({
+      success: true,
+      token,
+      apiKey: streamApiKey,
+      userId,
+    });
+  } catch (error) {
+    console.error("Stream token error:", error);
+    res.status(500).json({ success: false, message: "Failed to generate stream token" });
+  }
+});
+
+app.post("/api/stream/ensure-users", verifyTokenEarly, async (req, res) => {
+  try {
+    if (!streamClient) {
+      return res.status(503).json({ success: false, message: "Video calling is not configured" });
+    }
+
+    const { userIds } = req.body;
+    if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
+      return res.status(400).json({ success: false, message: "userIds array is required" });
+    }
+
+    const objectIds = userIds.map((id) => new ObjectId(id));
+    const users = await usersCollections
+      .find({ _id: { $in: objectIds } })
+      .toArray();
+
+    if (users.length === 0) {
+      return res.status(404).json({ success: false, message: "No users found" });
+    }
+
+    const streamUsers = users.map((u) => ({
+      id: u._id.toString(),
+      name: u.name || u.number || "User",
+      image: u.profileImage || "",
+      role: "user",
+    }));
+
+    await streamClient.upsertUsers(streamUsers);
+
+    res.json({ success: true, synced: streamUsers.length });
+  } catch (error) {
+    console.error("Stream ensure-users error:", error);
+    res.status(500).json({ success: false, message: "Failed to sync users with Stream" });
+  }
 });
 
 // =====================
@@ -7599,6 +7690,12 @@ app.delete("/api/delete-message/:messageId", async (req, res) => {
         .json({ error: "Message not found or access denied." });
     }
 
+    // Broadcast deletion if roomId is provided
+    const { roomId } = req.query;
+    if (roomId) {
+      io.to(roomId).emit("messageDeleted", { messageId });
+    }
+
     res.send({
       success: true,
       message: "Message deleted successfully.",
@@ -7606,6 +7703,45 @@ app.delete("/api/delete-message/:messageId", async (req, res) => {
   } catch (error) {
     console.error("Error deleting message:", error);
     res.status(500).json({ error: "Failed to delete the message." });
+  }
+});
+
+app.put("/api/messages/update/:messageId", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { messageId } = req.params;
+  const { messageText, roomId } = req.body;
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+    if (!user) {
+      return res.status(404).json({ error: "User Not Found." });
+    }
+
+    const result = await messagesCollections.updateOne(
+      { _id: new ObjectId(messageId), senderId: user._id },
+      { $set: { messageText, isEdited: true, editedAt: new Date() } },
+    );
+
+    if (result.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ error: "Message not found or you are not the sender." });
+    }
+
+    // Broadcast to the room
+    if (roomId) {
+      io.to(roomId).emit("messageUpdated", { messageId, messageText });
+    }
+
+    res.json({ success: true, message: "Message updated" });
+  } catch (error) {
+    console.error("Error editing message:", error);
+    res.status(500).json({ error: "Internal server error." });
   }
 });
 app.delete("/api/delete-conversation/:messageId", async (req, res) => {
@@ -7714,7 +7850,7 @@ app.get("/api/chat-users", async (req, res) => {
       .project({ name: 1, profileImage: 1, isOnline: 1, lastSeen: 1 })
       .toArray();
 
-    // Get last message for each user with error handling
+    // Get unread count and last message for each user with error handling
     const chatUsersWithLastMessage = await Promise.all(
       chatUsers.map(async (chatUser) => {
         try {
@@ -7735,6 +7871,12 @@ app.get("/api/chat-users", async (req, res) => {
             .limit(1)
             .toArray();
 
+          const unreadCount = await messagesCollections.countDocuments({
+            senderId: new ObjectId(chatUser._id),
+            receoientId: new ObjectId(user._id),
+            isRead: false,
+          });
+
           return {
             ...chatUser,
             lastMessage: lastMessage[0]?.messageText || null,
@@ -7744,6 +7886,7 @@ app.get("/api/chat-users", async (req, res) => {
                 ? "You"
                 : chatUser.name
               : null,
+            unreadCount: unreadCount,
             isOnline: chatUser.isOnline || false,
             lastSeen: chatUser.lastSeen || null,
           };
@@ -7752,11 +7895,24 @@ app.get("/api/chat-users", async (req, res) => {
           return {
             ...chatUser,
             lastMessage: null,
-            sender: null,
+            lastMessageTime: null,
+            unreadCount: 0,
+            isOnline: chatUser.isOnline || false,
           };
         }
       }),
     );
+
+    // Sort users by last message time (descending)
+    chatUsersWithLastMessage.sort((a, b) => {
+      const timeA = a.lastMessageTime
+        ? new Date(a.lastMessageTime).getTime()
+        : 0;
+      const timeB = b.lastMessageTime
+        ? new Date(b.lastMessageTime).getTime()
+        : 0;
+      return timeB - timeA;
+    });
 
     res.json({ success: true, users: chatUsersWithLastMessage });
   } catch (error) {
@@ -12773,6 +12929,33 @@ io.on("connection", (socket) => {
       type,
     } = notificationData;
     try {
+      const bookTypes = ["bookReq", "bookReqCl", "bookReqAc", "bookReturn"];
+      const isBookEvent = bookTypes.includes(type);
+
+      let pushTitle = `${senderName}`;
+      let pushBody = notifyText;
+
+      if (isBookEvent) {
+        switch (type) {
+          case "bookReq":
+            pushTitle = "New Book Request";
+            pushBody = `${senderName} requested a book from your library`;
+            break;
+          case "bookReqCl":
+            pushTitle = "Book Request Cancelled";
+            pushBody = `${senderName} cancelled a book request`;
+            break;
+          case "bookReqAc":
+            pushTitle = "Book Request Update";
+            pushBody = `${senderName} ${notifyText.toLowerCase()}`;
+            break;
+          case "bookReturn":
+            pushTitle = "Book Returned";
+            pushBody = `${senderName} returned your book`;
+            break;
+        }
+      }
+
       const newNotifyReq = {
         senderId: ObjectId(senderId),
         receoientId: ObjectId(receoientId),
@@ -12780,7 +12963,10 @@ io.on("connection", (socket) => {
         senderName,
         notifyText,
         type,
-        isRead: false, // Unread by default
+        title: pushTitle,
+        body: pushBody,
+        data: { type, senderId, senderName },
+        isRead: false,
         timestamp: new Date(),
       };
       await notifyCollections.insertOne(newNotifyReq);
@@ -12792,6 +12978,20 @@ io.on("connection", (socket) => {
         type,
         timestamp: new Date(),
       });
+
+      if (isBookEvent) {
+        try {
+          await sendPushNotification(
+            receoientId,
+            pushTitle,
+            pushBody,
+            { type, senderId, senderName },
+            true,
+          );
+        } catch (pushErr) {
+          console.error("FCM push error for book event:", pushErr.message);
+        }
+      }
     } catch (error) {
       console.log(error);
     }
@@ -12819,10 +13019,11 @@ io.on("connection", (socket) => {
         timestamp: new Date(),
       };
 
-      await messagesCollections.insertOne(newMessage);
+      const result = await messagesCollections.insertOne(newMessage);
 
       // রিসিভেন্টের রুমে মেসেজ পাঠানো
       io.to(roomId).emit("receiveMessage", {
+        _id: result.insertedId,
         senderId,
         messageText,
         messageType,
@@ -12830,11 +13031,32 @@ io.on("connection", (socket) => {
         timestamp: new Date(),
       });
 
-      // নোটিফিকেশন পাঠানো
+      // FCM পুশ নোটিফিকেশন পাঠানো
+      try {
+        await sendPushNotification(
+          receoientId,
+          `New Message from ${senderName}`,
+          messageText.substring(0, 100),
+          {
+            type: "MESSAGE",
+            senderId: senderId,
+            senderName: senderName,
+          },
+          true, // skipDb since it's already in messagesCollections
+        );
+      } catch (fcmError) {
+        console.error("Error sending message FCM:", fcmError);
+      }
+
       socket.to(receoientId).emit("newNotification", {
         senderName,
         senderId,
-        messageText: messageText.substring(0, 30),
+        type: "MESSAGE",
+        notifyText: messageText.substring(0, 30),
+        title: `New Message from ${senderName}`,
+        body: messageText.substring(0, 100),
+        data: { type: "MESSAGE", senderId, senderName },
+        isRead: false,
         timestamp: new Date(),
       });
     } catch (error) {
