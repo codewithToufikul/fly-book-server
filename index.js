@@ -1112,9 +1112,7 @@ if (!JWT_SECRET) {
   console.error("⚠️  Authentication will fail without this variable.");
 }
 
-// ============================================
-// FIREBASE ADMIN INITIALIZATION
-// ============================================
+
 let firebaseApp;
 try {
   // Try to load the service account key from a local file
