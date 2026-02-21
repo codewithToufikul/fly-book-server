@@ -1117,7 +1117,7 @@ let firebaseApp;
 try {
   // Try to load the service account key from a local file
   // The user should place this file in the root directory
-  const serviceAccount = require("/etc/secrets/firebase-service-account.json");
+  const serviceAccount = require("./firebase-service-account.json");
   firebaseApp = admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
