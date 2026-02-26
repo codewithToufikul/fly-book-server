@@ -1112,7 +1112,6 @@ if (!JWT_SECRET) {
   console.error("⚠️  Authentication will fail without this variable.");
 }
 
-
 let firebaseApp;
 try {
   // Try to load the service account key from a local file
@@ -1145,9 +1144,9 @@ const sendPushNotification = async (
         title,
         body,
         data,
-        type: data?.type || '',
-        senderId: data?.senderId || '',
-        senderName: data?.senderName || '',
+        type: data?.type || "",
+        senderId: data?.senderId || "",
+        senderName: data?.senderName || "",
         isRead: false,
         timestamp: new Date(),
       };
@@ -1290,6 +1289,7 @@ const proposalsCollection = db.collection("proposalsCollection");
 // Locations collection for wallate shop
 const locationsCollection = db.collection("locationsCollection");
 const shopsCollection = db.collection("shopsCollection");
+const shopProductsCollection = db.collection("shopProductsCollection");
 const reportCollections = db.collection("reportCollections");
 // Create text index on opinions collection when the server starts
 
@@ -1489,30 +1489,42 @@ if (streamApiKey && streamApiSecret) {
       });
       console.log("✅ Stream call type 'default' configured: 30s ring timeout");
     } catch (err) {
-      console.warn("⚠️ Could not update Stream call type settings:", err.message);
+      console.warn(
+        "⚠️ Could not update Stream call type settings:",
+        err.message,
+      );
     }
   })();
 } else {
-  console.warn("⚠️ STREAM_API_KEY or STREAM_API_SECRET not set — video calling disabled");
+  console.warn(
+    "⚠️ STREAM_API_KEY or STREAM_API_SECRET not set — video calling disabled",
+  );
 }
 
 app.get("/api/stream/token", verifyTokenEarly, async (req, res) => {
   try {
     if (!streamClient) {
-      return res.status(503).json({ success: false, message: "Video calling is not configured" });
+      return res
+        .status(503)
+        .json({ success: false, message: "Video calling is not configured" });
     }
 
     const user = req.user;
     const userId = user._id.toString();
 
-    await streamClient.upsertUsers([{
-      id: userId,
-      name: user.name || user.number || "User",
-      image: user.profileImage || "",
-      role: "user",
-    }]);
+    await streamClient.upsertUsers([
+      {
+        id: userId,
+        name: user.name || user.number || "User",
+        image: user.profileImage || "",
+        role: "user",
+      },
+    ]);
 
-    const token = streamClient.generateUserToken({ user_id: userId });
+    const token = streamClient.generateUserToken({
+      user_id: userId,
+      validity_in_seconds: 86400, // 24-hour expiry — forces app to refresh daily
+    });
 
     res.json({
       success: true,
@@ -1522,19 +1534,25 @@ app.get("/api/stream/token", verifyTokenEarly, async (req, res) => {
     });
   } catch (error) {
     console.error("Stream token error:", error);
-    res.status(500).json({ success: false, message: "Failed to generate stream token" });
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to generate stream token" });
   }
 });
 
 app.post("/api/stream/ensure-users", verifyTokenEarly, async (req, res) => {
   try {
     if (!streamClient) {
-      return res.status(503).json({ success: false, message: "Video calling is not configured" });
+      return res
+        .status(503)
+        .json({ success: false, message: "Video calling is not configured" });
     }
 
     const { userIds } = req.body;
     if (!userIds || !Array.isArray(userIds) || userIds.length === 0) {
-      return res.status(400).json({ success: false, message: "userIds array is required" });
+      return res
+        .status(400)
+        .json({ success: false, message: "userIds array is required" });
     }
 
     const objectIds = userIds.map((id) => new ObjectId(id));
@@ -1543,7 +1561,9 @@ app.post("/api/stream/ensure-users", verifyTokenEarly, async (req, res) => {
       .toArray();
 
     if (users.length === 0) {
-      return res.status(404).json({ success: false, message: "No users found" });
+      return res
+        .status(404)
+        .json({ success: false, message: "No users found" });
     }
 
     const streamUsers = users.map((u) => ({
@@ -1558,50 +1578,67 @@ app.post("/api/stream/ensure-users", verifyTokenEarly, async (req, res) => {
     res.json({ success: true, synced: streamUsers.length });
   } catch (error) {
     console.error("Stream ensure-users error:", error);
-    res.status(500).json({ success: false, message: "Failed to sync users with Stream" });
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to sync users with Stream" });
   }
 });
 
 app.post("/api/call-history", verifyTokenEarly, async (req, res) => {
+  console.log("☎️ Received call-history request:", req.body);
   try {
     const { callerId, calleeId, callType, status, duration } = req.body;
     if (!callerId || !calleeId) {
-      return res.status(400).json({ success: false, message: "callerId and calleeId required" });
+      console.log("❌ Missing IDs in call-history request");
+      return res
+        .status(400)
+        .json({ success: false, message: "callerId and calleeId required" });
     }
 
     const callerObjId = new ObjectId(callerId);
     const calleeObjId = new ObjectId(calleeId);
 
+    const durationText = (d) => {
+      const m = Math.floor(d / 60);
+      const s = d % 60;
+      return `${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+    };
+
     const callMessage = {
       senderId: callerObjId,
       receoientId: calleeObjId,
-      messageText: status === 'completed'
-        ? `${callType === 'video' ? 'Video' : 'Audio'} call · ${formatCallDuration(duration || 0)}`
-        : status === 'missed'
-          ? `Missed ${callType === 'video' ? 'video' : 'audio'} call`
-          : `${callType === 'video' ? 'Video' : 'Audio'} call declined`,
+      messageText:
+        status === "completed"
+          ? `${callType === "video" ? "Video" : "Audio"} call · ${durationText(duration || 0)}`
+          : status === "missed"
+            ? `Missed ${callType === "video" ? "video" : "audio"} call`
+            : `${callType === "video" ? "Video" : "Audio"} call declined`,
       messageType: "call",
       callData: { callType, status, duration: duration || 0 },
       isRead: false,
       timestamp: new Date(),
     };
 
-    await messagesCollections.insertOne(callMessage);
+    const result = await messagesCollections.insertOne(callMessage);
+    console.log("✅ Call history saved to DB, ID:", result.insertedId);
 
     const roomId = [callerId, calleeId].sort().join("-");
     io.to(roomId).emit("receiveMessage", {
-      _id: callMessage._id || new ObjectId(),
+      _id: result.insertedId,
       senderId: callerId,
       messageText: callMessage.messageText,
       messageType: "call",
       callData: callMessage.callData,
       timestamp: callMessage.timestamp,
     });
+    console.log("📡 SocketIO emit to room:", roomId);
 
     res.json({ success: true });
   } catch (error) {
     console.error("Call history error:", error);
-    res.status(500).json({ success: false, message: "Failed to save call history" });
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to save call history" });
   }
 });
 
@@ -4508,8 +4545,9 @@ app.post("/api/transfer-coins", async (req, res) => {
       return res.status(400).json({ error: "Invalid token payload" });
     }
 
-    const { receiverUsername, amount } = req.body;
+    const { receiverUsername, amount, walletType } = req.body;
     const transferAmount = parseFloat(amount);
+    const selectedWallet = walletType === "flyWallet" ? "flyWallet" : "wallet";
 
     if (!receiverUsername || isNaN(transferAmount) || transferAmount <= 0) {
       return res.status(400).json({ error: "Invalid transfer details" });
@@ -4530,15 +4568,17 @@ app.post("/api/transfer-coins", async (req, res) => {
       return res.status(400).json({ error: "Cannot transfer to yourself" });
     }
 
-    if (sender.wallet < transferAmount) {
-      return res.status(400).json({ error: "Insufficient balance" });
+    if ((sender[selectedWallet] || 0) < transferAmount) {
+      return res.status(400).json({
+        error: `Insufficient ${selectedWallet === "flyWallet" ? "Points" : "Cash"} balance`,
+      });
     }
 
     // Perform balance updates
     // Deduct from sender
     const deductResult = await usersCollections.updateOne(
-      { _id: sender._id, wallet: { $gte: transferAmount } },
-      { $inc: { wallet: -transferAmount } },
+      { _id: sender._id, [selectedWallet]: { $gte: transferAmount } },
+      { $inc: { [selectedWallet]: -transferAmount } },
     );
 
     if (deductResult.modifiedCount === 0) {
@@ -4550,7 +4590,7 @@ app.post("/api/transfer-coins", async (req, res) => {
     // Add to receiver
     await usersCollections.updateOne(
       { _id: receiver._id },
-      { $inc: { wallet: transferAmount } },
+      { $inc: { [selectedWallet]: transferAmount } },
     );
 
     // Log transaction
@@ -4575,6 +4615,37 @@ app.post("/api/transfer-coins", async (req, res) => {
       io.emit("walletUpdated", { userId: sender._id });
       io.emit("walletUpdated", { userId: receiver._id });
     }
+
+    // Send Push Notifications
+    const unit = selectedWallet === "flyWallet" ? "Points" : "Cash";
+
+    // Notify Receiver
+    sendPushNotification(
+      receiver._id,
+      "Balance Received",
+      `You have received ${transferAmount} ${unit} from @${sender.userName}`,
+      {
+        type: "transfer_received",
+        senderId: sender._id.toString(),
+        senderName: sender.name,
+        amount: transferAmount,
+        walletType: selectedWallet,
+      },
+    ).catch((err) => console.error("Receiver notification error:", err));
+
+    // Notify Sender (Confirmation)
+    sendPushNotification(
+      sender._id,
+      "Transfer Successful",
+      `You have successfully transferred ${transferAmount} ${unit} to @${receiver.userName}`,
+      {
+        type: "transfer_sent",
+        receiverId: receiver._id.toString(),
+        receiverName: receiver.name,
+        amount: transferAmount,
+        walletType: selectedWallet,
+      },
+    ).catch((err) => console.error("Sender notification error:", err));
 
     res.json({
       success: true,
@@ -5792,13 +5863,14 @@ app.post("/opinion/post", async (req, res) => {
       userProfileImage: user.profileImage || "",
       image: data.image || "",
       pdf: data.pdf || "",
+      video: data.video || "",
       description: data.description,
       date: data.date || new Date().toLocaleDateString(),
       time: data.time || new Date().toLocaleTimeString(),
       privacy: data.privacy || "public",
       createdAt: new Date(),
     };
-
+    console.log(newPost);
     const result = await opinionCollections.insertOne(newPost);
     res.status(201).json({
       success: true,
@@ -5827,14 +5899,52 @@ app.get("/opinion/posts", async (req, res) => {
   }
 
   try {
-    jwt.verify(token, JWT_SECRET);
+    const jwtSecret = process.env.ACCESS_TOKEN_SECRET || JWT_SECRET;
+    const decoded = jwt.verify(token, jwtSecret);
+
+    await connectToMongo();
+    if (!opinionCollections) {
+      return res.status(500).json({ error: "Opinion collection not found" });
+    }
+
+    let { userId } = req.query;
+
+    // Fallback: If no userId provided, use the current user's ID from token
+    if (!userId) {
+      const currentUser = await usersCollections.findOne({
+        number: decoded.number,
+      });
+      if (currentUser) {
+        userId = currentUser._id.toString();
+      }
+    }
+
+    // Default to a query that matches nothing if still no userId found
+    let query = { _id: null };
+
+    if (userId && userId !== "undefined" && userId !== "null") {
+      if (ObjectId.isValid(userId)) {
+        query = {
+          $or: [{ userId: new ObjectId(userId) }, { userId: userId }],
+        };
+      } else {
+        query = { userId: userId };
+      }
+    }
+
     const posts = await opinionCollections
-      .find()
+      .find(query)
       .sort({ createdAt: -1 })
       .toArray();
-    res.status(200).json({ success: true, data: posts });
+
+    res.status(200).json({
+      success: true,
+      data: posts,
+      count: posts.length,
+      filtered: true,
+    });
   } catch (error) {
-    console.error("Token validation error:", error.message || error);
+    console.error("Error in GET /opinion/posts:", error.message || error);
     res.status(401).json({ error: "Invalid or expired token." });
   }
 });
@@ -5862,12 +5972,13 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
 
     const { userId } = req.query;
     let query = {};
-    if (userId) {
+    if (userId && userId !== "undefined" && userId !== "null") {
       if (ObjectId.isValid(userId)) {
-        query = { userId: new ObjectId(userId) };
+        query = {
+          $or: [{ userId: new ObjectId(userId) }, { userId: userId }],
+        };
       } else {
-        // Fallback for string userId if any (though usually ObjectId)
-        query = { userId };
+        query = { userId: userId };
       }
     }
 
@@ -5880,6 +5991,7 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
           userProfileImage: 1,
           description: 1,
           image: 1,
+          video: 1,
           pdf: 1,
           likes: 1,
           likedBy: 1,
@@ -7987,6 +8099,36 @@ app.get("/api/chat-users", async (req, res) => {
   }
 });
 
+app.get("/api/messages/unread-count", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    const unreadSenders = await messagesCollections.distinct("senderId", {
+      receoientId: new ObjectId(user._id),
+      isRead: false,
+    });
+    const unreadCount = unreadSenders.length;
+    console.log(
+      `[API] Global unread count for ${user._id}: ${unreadCount} unique senders`,
+    );
+    res.json({ success: true, count: unreadCount });
+  } catch (error) {
+    console.error("Error fetching unread count:", error);
+    res.status(500).json({ error: "Internal server error." });
+  }
+});
+
 app.get("/api/messages/:userId", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
 
@@ -8005,6 +8147,9 @@ app.get("/api/messages/:userId", async (req, res) => {
     }
 
     const { userId } = req.params;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const skip = (page - 1) * limit;
 
     // Fetch chat messages where currentUser is either sender or receiver
     const messages = await messagesCollections
@@ -8020,10 +8165,17 @@ app.get("/api/messages/:userId", async (req, res) => {
           },
         ],
       })
-      .sort({ timestamp: 1 }) // Sort messages by timestamp
+      .sort({ timestamp: -1 }) // Sort messages by newest first for pagination
+      .skip(skip)
+      .limit(limit)
       .toArray();
 
-    res.json({ success: true, messages });
+    res.json({
+      success: true,
+      messages: messages, // Now descending (latest first)
+      hasMore: messages.length === limit,
+      page,
+    });
   } catch (error) {
     console.error("Error fetching messages:", error);
     res.status(500).json({ error: "Internal server error." });
@@ -8131,6 +8283,9 @@ app.put("/api/notifications/mark-read", async (req, res) => {
       );
     }
 
+    // Notify user's other sessions to update unread count
+    io.to(userId).emit("notificationsRead");
+
     res.json({ success: true, message: "Notifications marked as read" });
   } catch (error) {
     console.error("Error marking notifications as read:", error);
@@ -8199,6 +8354,27 @@ app.put("/api/messages/mark-read", async (req, res) => {
       },
       { $set: { isRead: true, readAt: new Date() } },
     );
+
+    // Notify sender that their messages have been read
+    io.to(senderId).emit("messagesRead", {
+      roomId: req.body.roomId,
+      readerId: userId,
+    });
+    // Notify the reader so their unread badge resets immediately on all their connected devices
+    io.to(userId).emit("messagesRead", {
+      roomId: req.body.roomId,
+      readerId: userId,
+    });
+
+    const unreadSenders = await messagesCollections.distinct("senderId", {
+      receoientId: new ObjectId(userId),
+      isRead: false,
+    });
+    const unreadCount = unreadSenders.length;
+    console.log(
+      `[Socket] Emitting unreadCountUpdate to ${userId}: ${unreadCount}`,
+    );
+    io.to(userId).emit("unreadCountUpdate", { count: unreadCount });
 
     res.json({ success: true, message: "Messages marked as read" });
   } catch (error) {
@@ -11081,13 +11257,13 @@ app.post("/user-withdraw", async (req, res) => {
     if (isNaN(withdrawAmount) || withdrawAmount < 10) {
       return res
         .status(400)
-        .json({ message: "Minimum withdrawal amount is 10 points" });
+        .json({ message: "Minimum withdrawal amount is 10" });
     }
 
     if (withdrawAmount > currentBalance) {
       return res
         .status(400)
-        .json({ message: "Insufficient flyWallet balance" });
+        .json({ message: "Insufficient Wallet (Cash) balance" });
     }
 
     const withdrawRequest = {
@@ -11105,7 +11281,7 @@ app.post("/user-withdraw", async (req, res) => {
     // Deduct balance immediately
     await usersCollections.updateOne(
       { _id: user._id },
-      { $inc: { flyWallet: -Number(amount) } },
+      { $inc: { wallet: -Number(amount) } },
     );
 
     await pointWithdrawCollection.insertOne(withdrawRequest);
@@ -11507,21 +11683,59 @@ app.patch("/admin-withdraw/:withdrawId/status", async (req, res) => {
     const { withdrawId } = req.params;
     const { status } = req.body; // pending, approved, rejected
 
-    // Try updating in both collections
-    let result = await withdrawsCollection.updateOne(
+    // Find the withdraw request first to get userId and details
+    let withdraw = await withdrawsCollection.findOne({
+      _id: new ObjectId(withdrawId),
+    });
+    let currentCollection = withdrawsCollection;
+
+    if (!withdraw) {
+      withdraw = await pointWithdrawCollection.findOne({
+        _id: new ObjectId(withdrawId),
+      });
+      currentCollection = pointWithdrawCollection;
+    }
+
+    if (!withdraw) {
+      return res.status(404).json({ message: "Withdraw request not found" });
+    }
+
+    // Perform update
+    const result = await currentCollection.updateOne(
       { _id: new ObjectId(withdrawId) },
       { $set: { status } },
     );
 
-    if (result.modifiedCount === 0) {
-      result = await pointWithdrawCollection.updateOne(
-        { _id: new ObjectId(withdrawId) },
-        { $set: { status } },
-      );
-    }
+    if (result.modifiedCount > 0) {
+      // Send Push Notification to User
+      const statusTitle =
+        status === "approved"
+          ? "Withdrawal Approved"
+          : status === "rejected"
+            ? "Withdrawal Rejected"
+            : "Withdrawal Status Updated";
 
-    if (result.modifiedCount === 0) {
-      return res.status(404).json({ message: "Withdraw request not found" });
+      const statusBody =
+        status === "approved"
+          ? `Your withdrawal request of ৳${withdraw.amount} has been approved.`
+          : status === "rejected"
+            ? `Your withdrawal request of ৳${withdraw.amount} was rejected.`
+            : `Your withdrawal request status is now: ${status}`;
+
+      sendPushNotification(withdraw.userId, statusTitle, statusBody, {
+        type: "withdraw_status",
+        withdrawId: withdrawId,
+        status: status,
+        amount: withdraw.amount,
+      }).catch((err) =>
+        console.error("Withdraw status notification error:", err),
+      );
+
+      // Emit socket update
+      const io = req.app.get("io") || global.io;
+      if (io) {
+        io.emit("walletUpdated", { userId: withdraw.userId });
+      }
     }
 
     res.status(200).json({ message: "Withdraw status updated successfully" });
@@ -13076,8 +13290,8 @@ io.on("connection", (socket) => {
     try {
       // মেসেজ ডাটাবেসে সংরক্ষণ করা
       const newMessage = {
-        senderId: ObjectId(senderId),
-        receoientId: ObjectId(receoientId),
+        senderId: new ObjectId(senderId),
+        receoientId: new ObjectId(receoientId),
         messageText,
         messageType,
         mediaUrl,
@@ -13125,6 +13339,17 @@ io.on("connection", (socket) => {
         isRead: false,
         timestamp: new Date(),
       });
+
+      // Calculate and emit the number of unique senders with unread messages
+      const unreadSenders = await messagesCollections.distinct("senderId", {
+        receoientId: new ObjectId(receoientId),
+        isRead: false,
+      });
+      const unreadCount = unreadSenders.length;
+      console.log(
+        `[Socket] New message: Emitting unreadCountUpdate to ${receoientId}: ${unreadCount}`,
+      );
+      io.to(receoientId).emit("unreadCountUpdate", { count: unreadCount });
     } catch (error) {
       console.error("Error sending message:", error);
     }
@@ -13944,11 +14169,72 @@ app.post("/api/shops", verifyToken, async (req, res) => {
   }
 });
 
+// Add new shop by User (pending status)
+app.post("/api/shops/user-add", verifyToken, async (req, res) => {
+  try {
+    const {
+      shopName,
+      shopImage,
+      shopCategory,
+      shopLocationId,
+      paymentPercentage,
+      mapLocation,
+      shopOwnerName,
+      contactNumber,
+    } = req.body;
+
+    if (!shopName || !shopImage || !shopLocationId || !mapLocation) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Required fields missing" });
+    }
+
+    const shopData = {
+      shopName,
+      shopImage,
+      shopCategory,
+      shopLocationId: new ObjectId(shopLocationId),
+      paymentPercentage: parseFloat(paymentPercentage) || 0,
+      mapLocation: {
+        lat: parseFloat(mapLocation.lat),
+        lng: parseFloat(mapLocation.lng),
+      },
+      shopOwnerName,
+      contactNumber,
+      status: "pending", // Default to pending for user submissions
+      submittedBy: new ObjectId(req.user._id),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await shopsCollection.insertOne(shopData);
+
+    return res.status(201).json({
+      success: true,
+      message: "Shop submitted successfully. Waiting for admin approval.",
+      data: { ...shopData, _id: result.insertedId },
+    });
+  } catch (error) {
+    console.error("POST /api/shops/user-add error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
 // Get all shops
 app.get("/api/shops", async (req, res) => {
   try {
+    const { status, submittedBy } = req.query;
+    const matchCriteria = {};
+    if (status) matchCriteria.status = status;
+    if (submittedBy) matchCriteria.submittedBy = new ObjectId(submittedBy);
+
+    const matchStage = { $match: matchCriteria };
+
     const shops = await shopsCollection
       .aggregate([
+        matchStage,
         {
           $lookup: {
             from: "locationsCollection",
@@ -13975,22 +14261,27 @@ app.get("/api/shops", async (req, res) => {
   }
 });
 
-// Update shop (admin only)
 app.put("/api/shops/:id", verifyToken, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
+    const shopId = new ObjectId(req.params.id);
+    const shop = await shopsCollection.findOne({ _id: shopId });
+
+    if (!shop) {
       return res
-        .status(403)
-        .json({ success: false, message: "Admin access required" });
+        .status(404)
+        .json({ success: false, message: "Shop not found" });
     }
 
-    let shopId;
-    try {
-      shopId = new ObjectId(req.params.id);
-    } catch {
+    // Authorization: Admin or Owner
+    const isOwner =
+      shop.submittedBy &&
+      shop.submittedBy.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === "admin";
+
+    if (!isAdmin && !isOwner) {
       return res
-        .status(400)
-        .json({ success: false, message: "Invalid shop ID" });
+        .status(403)
+        .json({ success: false, message: "Unauthorized to update this shop" });
     }
 
     const {
@@ -14024,22 +14315,130 @@ app.put("/api/shops/:id", verifyToken, async (req, res) => {
     }
     if (shopOwnerName) updateData.shopOwnerName = shopOwnerName;
     if (contactNumber) updateData.contactNumber = contactNumber;
-    if (status) updateData.status = status;
 
-    const result = await shopsCollection.updateOne(
-      { _id: shopId },
-      { $set: updateData },
-    );
+    // If user updates, reset to pending. If admin updates, use provided status or keep existing.
+    if (!isAdmin && isOwner) {
+      updateData.status = "pending";
+    } else if (isAdmin && status) {
+      updateData.status = status;
+    }
 
-    if (result.matchedCount === 0) {
+    await shopsCollection.updateOne({ _id: shopId }, { $set: updateData });
+
+    return res.json({
+      success: true,
+      message: isAdmin
+        ? "Shop updated successfully"
+        : "Shop updated and resubmitted for approval",
+    });
+  } catch (error) {
+    console.error("PUT /api/shops/:id error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// --- Shop Products Endpoints ---
+
+// Add product to shop
+app.post("/api/shops/:id/products", verifyToken, async (req, res) => {
+  try {
+    const shopId = new ObjectId(req.params.id);
+    const shop = await shopsCollection.findOne({ _id: shopId });
+
+    if (!shop) {
       return res
         .status(404)
         .json({ success: false, message: "Shop not found" });
     }
 
-    return res.json({ success: true, message: "Shop updated successfully" });
+    // Verify ownership
+    if (
+      shop.submittedBy?.toString() !== req.user._id.toString() &&
+      req.user.role !== "admin"
+    ) {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    const { productName, productImage, productPrice, productDescription } =
+      req.body;
+
+    if (!productName || !productImage || !productPrice) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing required fields" });
+    }
+
+    const productData = {
+      shopId,
+      productName,
+      productImage,
+      productPrice: parseFloat(productPrice),
+      productDescription: productDescription || "",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const result = await shopProductsCollection.insertOne(productData);
+
+    return res.status(201).json({
+      success: true,
+      message: "Product added successfully",
+      data: { ...productData, _id: result.insertedId },
+    });
   } catch (error) {
-    console.error("PUT /api/shops/:id error:", error);
+    console.error("POST /api/shops/:id/products error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get all products for a shop
+app.get("/api/shops/:id/products", async (req, res) => {
+  try {
+    const shopId = new ObjectId(req.params.id);
+    const products = await shopProductsCollection
+      .find({ shopId })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    return res.json({ success: true, data: products });
+  } catch (error) {
+    console.error("GET /api/shops/:id/products error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Delete a product
+app.delete("/api/shops/products/:productId", verifyToken, async (req, res) => {
+  try {
+    const productId = new ObjectId(req.params.productId);
+    const product = await shopProductsCollection.findOne({ _id: productId });
+
+    if (!product) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Product not found" });
+    }
+
+    const shop = await shopsCollection.findOne({ _id: product.shopId });
+    if (
+      !shop ||
+      (shop.submittedBy?.toString() !== req.user._id.toString() &&
+        req.user.role !== "admin")
+    ) {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    await shopProductsCollection.deleteOne({ _id: productId });
+
+    return res.json({ success: true, message: "Product deleted successfully" });
+  } catch (error) {
+    console.error("DELETE /api/shops/products/:productId error:", error);
     return res
       .status(500)
       .json({ success: false, message: "Internal server error" });
@@ -14049,28 +14448,28 @@ app.put("/api/shops/:id", verifyToken, async (req, res) => {
 // Delete shop (admin only)
 app.delete("/api/shops/:id", verifyToken, async (req, res) => {
   try {
-    if (req.user.role !== "admin") {
-      return res
-        .status(403)
-        .json({ success: false, message: "Admin access required" });
-    }
+    const shopId = new ObjectId(req.params.id);
+    const shop = await shopsCollection.findOne({ _id: shopId });
 
-    let shopId;
-    try {
-      shopId = new ObjectId(req.params.id);
-    } catch {
-      return res
-        .status(400)
-        .json({ success: false, message: "Invalid shop ID" });
-    }
-
-    const result = await shopsCollection.deleteOne({ _id: shopId });
-
-    if (result.deletedCount === 0) {
+    if (!shop) {
       return res
         .status(404)
         .json({ success: false, message: "Shop not found" });
     }
+
+    // Authorization: Admin or Owner
+    const isOwner =
+      shop.submittedBy &&
+      shop.submittedBy.toString() === req.user._id.toString();
+    const isAdmin = req.user.role === "admin";
+
+    if (!isAdmin && !isOwner) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Unauthorized to delete this shop" });
+    }
+
+    await shopsCollection.deleteOne({ _id: shopId });
 
     return res.json({ success: true, message: "Shop deleted successfully" });
   } catch (error) {
