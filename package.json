@@ -10,6 +10,8 @@
   "license": "ISC",
   "description": "",
   "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "@huggingface/inference": "^4.13.14",
     "@stream-io/node-sdk": "^0.7.42",
     "@vitalets/google-translate-api": "^9.2.1",
     "axios": "^1.7.9",

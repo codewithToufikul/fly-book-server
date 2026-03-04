@@ -5998,6 +5998,9 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
           comments: 1,
           date: 1,
           time: 1,
+          shares: 1,
+          isShared: 1,
+          originalPostData: 1,
           createdAt: 1,
           privacy: 1,
         },
@@ -6208,6 +6211,103 @@ app.post("/opinion/comment", async (req, res) => {
   } catch (error) {
     console.error("Error submitting comment:", error);
     res.status(401).json({ error: "Invalid or expired token." });
+  }
+});
+
+app.post("/opinion/share", verifyTokenEarly, async (req, res) => {
+  try {
+    const { postId, postType, personalMessage } = req.body;
+    if (!postId || !postType) {
+      return res.status(400).json({ error: "Post ID and type are required" });
+    }
+
+    const user = await usersCollections.findOne({
+      _id: new ObjectId(req.user._id),
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    let originalPost;
+    if (postType === "opinion") {
+      originalPost = await opinionCollections.findOne({
+        _id: new ObjectId(postId),
+      });
+    } else {
+      originalPost = await adminPostCollections.findOne({
+        _id: new ObjectId(postId),
+      });
+    }
+
+    if (!originalPost)
+      return res.status(404).json({ error: "Original post not found" });
+
+    const sharedPostData = {
+      userId: user._id,
+      userName: user.name || user.userName || "Anonymous",
+      userProfileImage: user.profileImage || "",
+      description: personalMessage || "",
+      isShared: true,
+      originalPostData: {
+        postId: originalPost._id,
+        postType: postType,
+        authorName:
+          originalPost.userName || originalPost.authorName || "Anonymous",
+        authorImage:
+          originalPost.userProfileImage ||
+          originalPost.userImage ||
+          originalPost.authorImage ||
+          originalPost.profileImage ||
+          "",
+        description:
+          originalPost.description ||
+          originalPost.postText ||
+          originalPost.message ||
+          "",
+        image:
+          originalPost.image ||
+          originalPost.postImage ||
+          originalPost.imageUrl ||
+          "",
+        video: originalPost.video || "",
+        pdf: originalPost.pdf || "",
+        createdAt: originalPost.createdAt,
+      },
+      date: new Date().toLocaleDateString("en-GB"),
+      time: new Date().toLocaleTimeString("en-GB", {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: true,
+      }),
+      likes: 0,
+      likedBy: [],
+      comments: [],
+      shares: 0,
+      createdAt: new Date(),
+    };
+
+    const result = await opinionCollections.insertOne(sharedPostData);
+
+    // Increase share count on original post
+    if (postType === "opinion") {
+      await opinionCollections.updateOne(
+        { _id: new ObjectId(postId) },
+        { $inc: { shares: 1 } },
+      );
+    } else {
+      await adminPostCollections.updateOne(
+        { _id: new ObjectId(postId) },
+        { $inc: { shares: 1 } },
+      );
+    }
+
+    res.status(201).json({
+      success: true,
+      message: "Post shared to profile!",
+      data: result,
+    });
+  } catch (error) {
+    console.error("Error sharing post:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -7586,6 +7686,7 @@ app.get("/api/home/fast-posts", async (req, res) => {
           likes: 1,
           likedBy: 1,
           comments: 1,
+          shares: 1,
           createdAt: 1,
         },
       })
@@ -14480,4 +14581,100 @@ app.delete("/api/shops/:id", verifyToken, async (req, res) => {
   }
 });
 
+// =====================
+// FlyBook AI Assistant (HuggingFace)
+// =====================
+
+app.post("/api/ai-assistant", async (req, res) => {
+  try {
+    const { message, history = [] } = req.body;
+
+    if (!message || !message.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Message is required",
+      });
+    }
+
+    const FLYBOOK_SYSTEM_PROMPT = `
+You are FlyBot, the official AI assistant for the FlyBook app.
+
+You ONLY answer questions about FlyBook.
+
+FlyBook Features:
+- Home Feed: Share posts, images, videos. Like, comment, share posts.
+- Opinions: Share opinions with text, images, video, PDF.
+- Books: Digital library for reading and sharing books.
+- Profile: Personal profile with bio, followers, following, posts.
+- FlyWallet (Points): Earn points from activity. Transfer via QR code or username.
+- Cash Wallet: Convert points to cash. Withdraw via bKash, Nagad, Rocket, or Bank.
+- Partner Shops: Earn points back at partner shops. View shops on map.
+- Search: Find people, opinions, books, web results. AI insights included.
+- Chat: Text, image, video messages. Edit and delete messages.
+- Calls: Voice and video calls.
+- Notifications: Likes, comments, follows.
+- Share: Share any post to your profile.
+- Community: Create or join communities.
+- Dark Mode: Light and dark theme support.
+
+IMPORTANT RULES:
+1. ONLY answer FlyBook-related questions.
+2. If asked about anything outside FlyBook, reply:
+"আমি শুধুমাত্র FlyBook অ্যাপ সম্পর্কিত প্রশ্নের উত্তর দিতে পারি। FlyBook নিয়ে কোনো প্রশ্ন থাকলে জিজ্ঞাসা করুন!"
+3. Reply in Bengali if asked in Bengali.
+4. Reply in English if asked in English.
+5. Keep answers short, clear and helpful.
+`;
+
+    const messages = [
+      { role: "system", content: FLYBOOK_SYSTEM_PROMPT },
+
+      ...history.map((h) => ({
+        role: h.role === "assistant" ? "assistant" : "user",
+        content: h.text || "",
+      })),
+
+      {
+        role: "user",
+        content: message.trim(),
+      },
+    ];
+
+    const response = await axios.post(
+      "https://router.huggingface.co/v1/chat/completions",
+      {
+        model: "meta-llama/Llama-3.1-8B-Instruct:novita",
+        messages,
+        temperature: 0.7,
+        max_tokens: 300,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.HUGGING_FACE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 15000,
+      },
+    );
+
+    const reply =
+      response.data?.choices?.[0]?.message?.content ||
+      "দুঃখিত, এখন উত্তর দিতে পারছি না। পরে আবার চেষ্টা করুন।";
+
+    return res.json({
+      success: true,
+      reply,
+    });
+  } catch (error) {
+    console.error(
+      "POST /api/ai-assistant error:",
+      error.response?.data || error.message,
+    );
+
+    return res.status(500).json({
+      success: false,
+      message: "AI service error. Please try again later.",
+    });
+  }
+});
 // Start the serve
