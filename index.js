@@ -3341,6 +3341,7 @@ app.get("/search", async (req, res) => {
 
 // Generate and send OTP to email
 app.post("/users/send-otp", async (req, res) => {
+  await connectToMongo();
   try {
     const { email } = req.body;
     console.log(email);
