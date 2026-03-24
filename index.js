@@ -112,7 +112,9 @@ const client = new MongoClient(uri, {
 const sendEmail = async ({ to, subject, html, fromName = "FlyBook" }) => {
   const sgKey = process.env.SENDGRID_API_KEY;
   if (!sgKey) {
-    throw new Error("SENDGRID_API_KEY is not set. Please add it to your environment variables.");
+    throw new Error(
+      "SENDGRID_API_KEY is not set. Please add it to your environment variables.",
+    );
   }
   try {
     const response = await axios.post(
@@ -129,7 +131,7 @@ const sendEmail = async ({ to, subject, html, fromName = "FlyBook" }) => {
           "Content-Type": "application/json",
         },
         timeout: 15000,
-      }
+      },
     );
     console.log(`✅ Email sent to ${to} via SendGrid HTTP API`);
     return { success: true };
@@ -1155,7 +1157,7 @@ let firebaseApp;
 try {
   // Try to load the service account key from a local file
   // The user should place this file in the root directory
-  const serviceAccount = require("/etc/secrets/firebase-service-account.json");
+  const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
   firebaseApp = admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
@@ -3421,7 +3423,6 @@ app.post("/users/send-otp", async (req, res) => {
 
     console.log(`✅ OTP sent to ${email}: ${otp}`);
 
-
     res.status(200).json({
       success: true,
       message: "Verification code sent to your email",
@@ -4568,7 +4569,6 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
       </div>`,
     });
     res.json({ success: true, message: "Reset code sent to your email" });
-
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
