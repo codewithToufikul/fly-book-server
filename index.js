@@ -3350,7 +3350,19 @@ app.post("/users/send-otp", async (req, res) => {
         user: "flybook24@gmail.com",
         pass: "rswn cfdm lfpv arci",
       },
+      // Better timeout and connection pool for production
+      pool: true,
+      maxConnections: 3,
+      connectionTimeout: 10000,
     });
+
+    // Verify transporter connection
+    try {
+      await transporter.verify();
+    } catch (verifyError) {
+      console.error("❌ Transporter verification failed:", verifyError);
+      throw new Error("Email service is temporarily unavailable");
+    }
 
     // Email template
     const mailOptions = {
@@ -3414,17 +3426,18 @@ app.post("/users/send-otp", async (req, res) => {
     // Send email
     await transporter.sendMail(mailOptions);
 
-    console.log(`OTP sent to ${email}: ${otp} (expires at ${expiresAt})`);
+    console.log(`✅ OTP sent to ${email}: ${otp}`);
 
     res.status(200).json({
       success: true,
       message: "Verification code sent to your email",
     });
   } catch (error) {
-    console.error("Error sending OTP:", error);
+    console.error("❌ ERROR SENDING OTP:", error.message || error);
     res.status(500).json({
       success: false,
-      message: "Failed to send verification code. Please try again.",
+      message:
+        error.message || "Failed to send verification code. Please try again.",
     });
   }
 });
@@ -3515,8 +3528,29 @@ app.post("/users/register", async (req, res) => {
       }
     }
 
-    // Check if user already exists
-    const existingUser = await usersCollections.findOne({ number });
+    // Check if user already exists (supporting multi-format for search)
+    let checkQuery = { number: number };
+    if (number.startsWith("+880")) {
+      const legacyFormat = "0" + number.slice(4);
+      checkQuery = { $or: [{ number: number }, { number: legacyFormat }] };
+    } else if (number.startsWith("0") && number.length === 11) {
+      const internationalFormat = "+880" + number.slice(1);
+      checkQuery = {
+        $or: [{ number: number }, { number: internationalFormat }],
+      };
+    } else if (number.startsWith("880")) {
+      const legacyFormat = "0" + number.slice(3);
+      const internationalFormat = "+" + number;
+      checkQuery = {
+        $or: [
+          { number: number },
+          { number: legacyFormat },
+          { number: internationalFormat },
+        ],
+      };
+    }
+
+    const existingUser = await usersCollections.findOne(checkQuery);
     if (existingUser) {
       return res.status(400).send({
         success: false,
@@ -3652,7 +3686,7 @@ app.post("/users/register", async (req, res) => {
 // User Login Route
 app.post("/users/login", async (req, res) => {
   const { number, password } = req.body;
-
+  console.log("Login attempt:", number, password);
   // Input validation
   if (!number || !password) {
     return res
@@ -3674,7 +3708,27 @@ app.post("/users/login", async (req, res) => {
       });
     }
 
-    const user = await usersCollections.findOne({ number });
+    // Enhanced search for Bangladesh numbers (supports both legacy and international formats)
+    let query = { number: number };
+    if (number.startsWith("+880")) {
+      const legacyFormat = "0" + number.slice(4);
+      query = { $or: [{ number: number }, { number: legacyFormat }] };
+    } else if (number.startsWith("0") && number.length === 11) {
+      const internationalFormat = "+880" + number.slice(1);
+      query = { $or: [{ number: number }, { number: internationalFormat }] };
+    } else if (number.startsWith("880")) {
+      const legacyFormat = "0" + number.slice(3);
+      const internationalFormat = "+" + number;
+      query = {
+        $or: [
+          { number: number },
+          { number: legacyFormat },
+          { number: internationalFormat },
+        ],
+      };
+    }
+
+    const user = await usersCollections.findOne(query);
 
     if (!user) {
       return res
@@ -4413,6 +4467,49 @@ app.put("/api/user/change-password", async (req, res) => {
     res.json({ success: true, message: "Password updated successfully" });
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Find User by Email (for Forgot Password search)
+app.get("/api/user/find-by-email", async (req, res) => {
+  try {
+    const { email } = req.query;
+    if (!email) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Email is required" });
+    }
+
+    const user = await usersCollections.findOne({
+      email: email.toLowerCase().trim(),
+    });
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "No account found with this email" });
+    }
+
+    // Return limited info for identification
+    // Mask phone number for security (e.g., +8801******24)
+    const phone = user.number || "";
+    const maskedPhone =
+      phone.length > 7
+        ? phone.slice(0, 5) + "*".repeat(phone.length - 7) + phone.slice(-2)
+        : phone;
+
+    res.json({
+      success: true,
+      user: {
+        name: user.name,
+        profileImage: user.profileImage || "",
+        email: user.email,
+        phone: maskedPhone,
+      },
+    });
+  } catch (error) {
+    console.error("Find by email error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -5862,6 +5959,11 @@ app.post("/opinion/post", async (req, res) => {
       userName: user.name || user.userName || "Anonymous",
       userProfileImage: user.profileImage || "",
       image: data.image || "",
+      images: Array.isArray(data.images)
+        ? data.images
+        : data.image
+          ? [data.image]
+          : [],
       pdf: data.pdf || "",
       video: data.video || "",
       description: data.description,
@@ -6003,6 +6105,7 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
           originalPostData: 1,
           createdAt: 1,
           privacy: 1,
+          images: 1,
         },
       })
       .sort({ createdAt: -1 }) // Users requested latest posts first
@@ -6267,6 +6370,7 @@ app.post("/opinion/share", verifyTokenEarly, async (req, res) => {
           originalPost.postImage ||
           originalPost.imageUrl ||
           "",
+        images: originalPost.images || [],
         video: originalPost.video || "",
         pdf: originalPost.pdf || "",
         createdAt: originalPost.createdAt,
@@ -9512,7 +9616,10 @@ app.get("/api/v1/activity/:id", async (req, res) => {
 app.get("/organizations/activities", async (req, res) => {
   try {
     const organizations = await organizationCollections
-      .find({ status: { $eq: "accepted" } }, { projection: { activities: 1 } })
+      .find(
+        { status: { $eq: "accepted" } },
+        { projection: { activities: 1, orgName: 1, profileImage: 1 } },
+      )
       .toArray();
 
     res.status(200).json({
@@ -14677,4 +14784,38 @@ IMPORTANT RULES:
     });
   }
 });
-// Start the serve
+// SSO Verification (Identity Provider)
+app.get("/api/v1/auth/verify-sso-token", async (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+      return res.status(401).json({ success: false, message: "Missing token" });
+    }
+
+    const token = authHeader.split(" ")[1];
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find user - FlyBook uses 'number' as the identifier in token
+    const user = await usersCollections.findOne({ number: decoded.number });
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    return res.status(200).json({
+      success: true,
+      user: {
+        _id: user._id,
+        name: user.name,
+        number: user.number,
+        profileImage: user.profileImage,
+        id: user._id, // compatibility
+      },
+    });
+  } catch (error) {
+    console.error("❌ SSO Verify Error:", error.message);
+    return res.status(401).json({ success: false, message: "Invalid token" });
+  }
+});
