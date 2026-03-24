@@ -3352,18 +3352,18 @@ app.post("/users/send-otp", async (req, res) => {
         user: "flybook24@gmail.com",
         pass: "rswn cfdm lfpv arci",
       },
+      tls: {
+        rejectUnauthorized: false,
+      },
       pool: true,
       maxConnections: 3,
-      connectionTimeout: 15000, // Slightly longer timeout for production
+      connectionTimeout: 20000,
+      greetingTimeout: 20000,
+      socketTimeout: 30000,
     });
 
-    // Verify transporter connection
-    try {
-      await transporter.verify();
-    } catch (verifyError) {
-      console.error("❌ Transporter verification failed:", verifyError);
-      throw new Error("Email service is temporarily unavailable");
-    }
+    // Non-blocking transporter verification (don't throw error in production)
+    transporter.verify().catch(err => console.error("⚠️ SMTP Verify warning:", err.message));
 
     // Email template
     const mailOptions = {
@@ -3508,6 +3508,7 @@ app.post("/users/verify-otp", async (req, res) => {
 
 // User Registration Route
 app.post("/users/register", async (req, res) => {
+  await connectToMongo();
   try {
     const { name, email, number, password, userLocation, referrerUsername } =
       req.body;
@@ -4521,6 +4522,7 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
   await connectToMongo();
   try {
     const { email } = req.body;
+
     if (!email)
       return res
         .status(400)
@@ -4554,6 +4556,7 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
 
     // Reuse transporter config from existing send-otp
     // Port 465 + secure: true is much more stable for Gmail on Render
+    // Re-check SMTP config for Render production
     const transporter = nodemailer.createTransport({
       host: "smtp.gmail.com",
       port: 465,
@@ -4562,8 +4565,13 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
         user: "flybook24@gmail.com",
         pass: "rswn cfdm lfpv arci",
       },
+      tls: {
+        rejectUnauthorized: false, // Bypass some SSL certificate issues on cloud proxies
+      },
       pool: true,
-      connectionTimeout: 10000,
+      connectionTimeout: 20000, // 20 seconds
+      greetingTimeout: 20000,
+      socketTimeout: 30000,
     });
 
     const mailOptions = {
@@ -4591,6 +4599,7 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
 
 // Forgot Password - Reset with OTP
 app.post("/api/user/reset-password-otp", async (req, res) => {
+  await connectToMongo();
   try {
     const { email, otp, newPassword } = req.body;
 
