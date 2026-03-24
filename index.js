@@ -1158,6 +1158,7 @@ try {
   // Try to load the service account key from a local file
   // The user should place this file in the root directory
   const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
+  console.log("✅ Firebase Admin initialized successfully", serviceAccount);
   firebaseApp = admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
