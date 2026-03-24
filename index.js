@@ -101,6 +101,45 @@ const client = new MongoClient(uri, {
   directConnection: false, // Use SRV records for MongoDB Atlas
 });
 
+/**
+ * Centralized Email Transporter Factory
+ * Uses SendGrid in production, falls back to Gmail
+ */
+const getTransporter = () => {
+  const sgKey = process.env.SENDGRID_API_KEY;
+  if (sgKey) {
+    return nodemailer.createTransport({
+      host: "smtp.sendgrid.net",
+      port: 587,
+      auth: {
+        user: "apikey",
+        pass: sgKey,
+      },
+      tls: {
+        rejectUnauthorized: false,
+      },
+      pool: true,
+      maxConnections: 3,
+      connectionTimeout: 20000,
+    });
+  }
+  // Fallback to Gmail with production-ready settings
+  return nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: {
+      user: process.env.EMAIL_USER || "hello@flybook.com.bd",
+      pass: process.env.EMAIL_PASS || "rswn cfdm lfpv arci",
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+    pool: true,
+    connectionTimeout: 20000,
+  });
+};
+
 // (audio upload route is defined after audioUpload is initialized)
 
 // MongoDB connection
@@ -3344,30 +3383,14 @@ app.post("/users/send-otp", async (req, res) => {
     );
 
     // Configure email transporter
-    const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: {
-        user: "flybook24@gmail.com",
-        pass: "rswn cfdm lfpv arci",
-      },
-      tls: {
-        rejectUnauthorized: false,
-      },
-      pool: true,
-      maxConnections: 3,
-      connectionTimeout: 20000,
-      greetingTimeout: 20000,
-      socketTimeout: 30000,
-    });
+    const transporter = getTransporter();
 
     // Non-blocking transporter verification (don't throw error in production)
     transporter.verify().catch(err => console.error("⚠️ SMTP Verify warning:", err.message));
 
     // Email template
     const mailOptions = {
-      from: "FlyBook <flybook24@gmail.com>",
+      from: "FlyBook <hello@flybook.com.bd>",
       to: email,
       subject: "Your FlyBook Verification Code",
       html: `
@@ -4320,17 +4343,11 @@ app.post("/api/report-profile", async (req, res) => {
     const result = await reportCollections.insertOne(reportData);
 
     // Send email notification to FlyBook
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: "flybook24@gmail.com",
-        pass: "rswn cfdm lfpv arci",
-      },
-    });
+    const transporter = getTransporter();
 
     const mailOptions = {
-      from: "FlyBook Report System <flybook24@gmail.com>",
-      to: "flybook24@gmail.com",
+      from: "FlyBook Report <hello@flybook.com.bd>",
+      to: "hello@flybook.com.bd",
       subject: `🚨 Profile Report: ${reportedUser.name} - ${reason}`,
       html: `
         <div style="font-family: 'Segoe UI', Arial, sans-serif; max-width: 600px; margin: auto; background: #ffffff; border-radius: 16px; overflow: hidden; border: 1px solid #e5e7eb;">
@@ -4554,28 +4571,10 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
       { upsert: true },
     );
 
-    // Reuse transporter config from existing send-otp
-    // Port 465 + secure: true is much more stable for Gmail on Render
-    // Re-check SMTP config for Render production
-    const transporter = nodemailer.createTransport({
-      host: "smtp.gmail.com",
-      port: 465,
-      secure: true,
-      auth: {
-        user: "flybook24@gmail.com",
-        pass: "rswn cfdm lfpv arci",
-      },
-      tls: {
-        rejectUnauthorized: false, // Bypass some SSL certificate issues on cloud proxies
-      },
-      pool: true,
-      connectionTimeout: 20000, // 20 seconds
-      greetingTimeout: 20000,
-      socketTimeout: 30000,
-    });
+    const transporter = getTransporter();
 
     const mailOptions = {
-      from: "FlyBook Security <flybook24@gmail.com>",
+      from: "FlyBook <hello@flybook.com.bd>",
       to: email,
       subject: "Password Reset Code - FlyBook",
       html: `
@@ -5433,16 +5432,10 @@ app.post("/forgot-password", async (req, res) => {
   const token = jwt.sign({ id: user._id }, JWT_SECRET, {
     expiresIn: "30d",
   });
-  var transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: "flybook24@gmail.com",
-      pass: "rswn cfdm lfpv arci",
-    },
-  });
+  var transporter = getTransporter();
 
   var mailOptions = {
-    from: "flybook24@gmail.com",
+    from: "hello@flybook.com.bd",
     to: email,
     subject: "Your FlyBook Reset Password Link",
     text: `https://flybook.com.bd/reset_password/${user._id}/${token}`,
@@ -13303,18 +13296,12 @@ app.post("/api/social-response/complaint", async (req, res) => {
     const { name, phone, email, location, message, priority } = req.body;
 
     // Configure email transporter
-    const transporter = nodemailer.createTransport({
-      service: "gmail",
-      auth: {
-        user: "flybook24@gmail.com",
-        pass: "rswn cfdm lfpv arci",
-      },
-    });
+    const transporter = getTransporter();
 
     // Email content
     const mailOptions = {
-      from: "FlyBook Support <flybook24@gmail.com>",
-      to: "flybook24@gmail.com", // Send to the same email or a specific support email
+      from: "FlyBook Support <hello@flybook.com.bd>",
+      to: "hello@flybook.com.bd", // Send to the same email or a specific support email
       subject: `New Social Responsibility Complaint: ${priority.toUpperCase()}`,
       html: `
         <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
