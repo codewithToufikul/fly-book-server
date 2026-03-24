@@ -3362,6 +3362,17 @@ app.post("/users/send-otp", async (req, res) => {
       });
     }
 
+    // Check if email already exists
+    const existingUser = await usersCollections.findOne({
+      email: email.toLowerCase().trim(),
+    });
+    if (existingUser) {
+      return res.status(400).json({
+        success: false,
+        message: "An account with this email already exists.",
+      });
+    }
+
     // Generate 6-digit OTP
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -3535,12 +3546,25 @@ app.post("/users/register", async (req, res) => {
       };
     }
 
-    const existingUser = await usersCollections.findOne(checkQuery);
-    if (existingUser) {
+    const existingNumber = await usersCollections.findOne(checkQuery);
+    if (existingNumber) {
       return res.status(400).send({
         success: false,
-        message: "User with this number already exists.",
+        message: "An account with this phone number already exists.",
       });
+    }
+
+    // Check if email already exists (extra safety in case they bypassed send-otp)
+    if (email) {
+      const existingEmail = await usersCollections.findOne({
+        email: email.toLowerCase().trim(),
+      });
+      if (existingEmail) {
+        return res.status(400).send({
+          success: false,
+          message: "An account with this email already exists.",
+        });
+      }
     }
 
     // Generate username from name
