@@ -3345,15 +3345,16 @@ app.post("/users/send-otp", async (req, res) => {
 
     // Configure email transporter
     const transporter = nodemailer.createTransport({
-      service: "gmail",
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
       auth: {
         user: "flybook24@gmail.com",
         pass: "rswn cfdm lfpv arci",
       },
-      // Better timeout and connection pool for production
       pool: true,
       maxConnections: 3,
-      connectionTimeout: 10000,
+      connectionTimeout: 15000, // Slightly longer timeout for production
     });
 
     // Verify transporter connection
@@ -3444,6 +3445,7 @@ app.post("/users/send-otp", async (req, res) => {
 
 // Verify OTP
 app.post("/users/verify-otp", async (req, res) => {
+  await connectToMongo();
   try {
     const { email, otp } = req.body;
 
@@ -4472,6 +4474,7 @@ app.put("/api/user/change-password", async (req, res) => {
 
 // Find User by Email (for Forgot Password search)
 app.get("/api/user/find-by-email", async (req, res) => {
+  await connectToMongo();
   try {
     const { email } = req.query;
     if (!email) {
@@ -4515,6 +4518,7 @@ app.get("/api/user/find-by-email", async (req, res) => {
 
 // Forgot Password - Send OTP
 app.post("/api/user/forgot-password-otp", async (req, res) => {
+  await connectToMongo();
   try {
     const { email } = req.body;
     if (!email)
@@ -4549,12 +4553,17 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
     );
 
     // Reuse transporter config from existing send-otp
+    // Port 465 + secure: true is much more stable for Gmail on Render
     const transporter = nodemailer.createTransport({
-      service: "gmail",
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
       auth: {
         user: "flybook24@gmail.com",
         pass: "rswn cfdm lfpv arci",
       },
+      pool: true,
+      connectionTimeout: 10000,
     });
 
     const mailOptions = {
