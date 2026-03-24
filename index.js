@@ -102,42 +102,42 @@ const client = new MongoClient(uri, {
 });
 
 /**
- * Centralized Email Transporter Factory
- * Uses SendGrid in production, falls back to Gmail
+ * sendEmail - Uses SendGrid HTTP API (port 443) to bypass Render's SMTP blocking.
+ * Render blocks all SMTP ports (25, 465, 587). Only HTTP API works reliably.
+ * @param {string} to - Recipient email
+ * @param {string} subject - Email subject
+ * @param {string} html - HTML body
+ * @param {string} fromName - Sender display name
  */
-const getTransporter = () => {
+const sendEmail = async ({ to, subject, html, fromName = "FlyBook" }) => {
   const sgKey = process.env.SENDGRID_API_KEY;
-  if (sgKey) {
-    return nodemailer.createTransport({
-      host: "smtp.sendgrid.net",
-      port: 587,
-      auth: {
-        user: "apikey",
-        pass: sgKey,
-      },
-      tls: {
-        rejectUnauthorized: false,
-      },
-      pool: true,
-      maxConnections: 3,
-      connectionTimeout: 20000,
-    });
+  if (!sgKey) {
+    throw new Error("SENDGRID_API_KEY is not set. Please add it to your environment variables.");
   }
-  // Fallback to Gmail with production-ready settings
-  return nodemailer.createTransport({
-    host: "smtp.gmail.com",
-    port: 465,
-    secure: true,
-    auth: {
-      user: process.env.EMAIL_USER || "hello@flybook.com.bd",
-      pass: process.env.EMAIL_PASS || "rswn cfdm lfpv arci",
-    },
-    tls: {
-      rejectUnauthorized: false,
-    },
-    pool: true,
-    connectionTimeout: 20000,
-  });
+  try {
+    const response = await axios.post(
+      "https://api.sendgrid.com/v3/mail/send",
+      {
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: "hello@flybook.com.bd", name: fromName },
+        subject: subject,
+        content: [{ type: "text/html", value: html }],
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${sgKey}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 15000,
+      }
+    );
+    console.log(`✅ Email sent to ${to} via SendGrid HTTP API`);
+    return { success: true };
+  } catch (error) {
+    const errMsg = error.response?.data?.errors?.[0]?.message || error.message;
+    console.error(`❌ SendGrid API Error: ${errMsg}`);
+    throw new Error(errMsg);
+  }
 };
 
 // (audio upload route is defined after audioUpload is initialized)
@@ -3382,75 +3382,33 @@ app.post("/users/send-otp", async (req, res) => {
       { upsert: true },
     );
 
-    // Configure email transporter
-    const transporter = getTransporter();
-
-    // Non-blocking transporter verification (don't throw error in production)
-    transporter.verify().catch(err => console.error("⚠️ SMTP Verify warning:", err.message));
-
-    // Email template
-    const mailOptions = {
-      from: "FlyBook <hello@flybook.com.bd>",
+    // Send OTP email via SendGrid HTTP API (no SMTP - bypasses Render port blocking)
+    await sendEmail({
       to: email,
       subject: "Your FlyBook Verification Code",
-      html: `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .logo { font-size: 28px; font-weight: bold; margin-bottom: 10px; }
-            .content { background: #ffffff; padding: 40px 30px; border: 1px solid #e5e7eb; }
-            .otp-box { background: #f3f4f6; border: 2px dashed #3B82F6; border-radius: 10px; padding: 20px; text-align: center; margin: 30px 0; }
-            .otp-code { font-size: 36px; font-weight: bold; color: #3B82F6; letter-spacing: 8px; font-family: monospace; }
-            .footer { background: #f9fafb; padding: 20px; text-align: center; font-size: 12px; color: #6b7280; border-radius: 0 0 10px 10px; }
-            .button { display: inline-block; background: #3B82F6; color: white; padding: 12px 30px; text-decoration: none; border-radius: 6px; margin: 20px 0; }
-            .warning { color: #ef4444; font-size: 14px; margin-top: 20px; }
-          </style>
-        </head>
-        <body>
-          <div class="container">
-            <div class="header">
-              <div class="logo">📚 FlyBook</div>
-              <p style="margin: 0; font-size: 16px;">Your Social Learning Platform</p>
-            </div>
-            
-            <div class="content">
-              <h2 style="color: #1f2937; margin-top: 0;">Verify Your Email Address</h2>
-              <p>Hi there! 👋</p>
-              <p>Thank you for signing up for FlyBook! To complete your registration, please verify your email address by entering the code below:</p>
-              
-              <div class="otp-box">
-                <p style="margin: 0 0 10px 0; font-size: 14px; color: #6b7280;">Your Verification Code</p>
-                <div class="otp-code">${otp}</div>
-              </div>
-              
-              <p><strong>Important:</strong></p>
-              <ul>
-                <li>This code will expire in <strong>10 minutes</strong></li>
-                <li>Don't share this code with anyone</li>
-                <li>If you didn't request this code, please ignore this email</li>
-              </ul>
-              
-              <p class="warning">⚠️ This is an automated email. Please do not reply.</p>
-            </div>
-            
-            <div class="footer">
-              <p>© 2026 FlyBook - Your Social Learning Platform</p>
-              <p>This email was sent to ${email}</p>
-            </div>
-          </div>
-        </body>
-        </html>
-      `,
-    };
-
-    // Send email
-    await transporter.sendMail(mailOptions);
+      fromName: "FlyBook",
+      html: `<!DOCTYPE html><html><head><style>
+        body{font-family:Arial,sans-serif;line-height:1.6;color:#333}
+        .container{max-width:600px;margin:0 auto;padding:20px}
+        .header{background:linear-gradient(135deg,#3B82F6 0%,#2563EB 100%);color:white;padding:30px;text-align:center;border-radius:10px 10px 0 0}
+        .otp-box{background:#f3f4f6;border:2px dashed #3B82F6;border-radius:10px;padding:20px;text-align:center;margin:30px 0}
+        .otp-code{font-size:36px;font-weight:bold;color:#3B82F6;letter-spacing:8px;font-family:monospace}
+        .footer{background:#f9fafb;padding:20px;text-align:center;font-size:12px;color:#6b7280;border-radius:0 0 10px 10px}
+      </style></head><body><div class="container">
+        <div class="header"><div style="font-size:28px;font-weight:bold">📚 FlyBook</div><p style="margin:0;font-size:16px">Your Social Learning Platform</p></div>
+        <div style="background:#fff;padding:40px 30px;border:1px solid #e5e7eb">
+          <h2 style="color:#1f2937;margin-top:0">Verify Your Email Address</h2>
+          <p>Hi there! 👋 Thank you for signing up for FlyBook! Please verify your email address using the code below:</p>
+          <div class="otp-box"><p style="margin:0 0 10px 0;font-size:14px;color:#6b7280">Your Verification Code</p><div class="otp-code">${otp}</div></div>
+          <p><strong>This code expires in 10 minutes.</strong> Don't share it with anyone.</p>
+          <p style="color:#ef4444;font-size:14px">⚠️ This is an automated email. Please do not reply.</p>
+        </div>
+        <div class="footer"><p>© 2026 FlyBook - Your Social Learning Platform</p><p>This email was sent to ${email}</p></div>
+      </div></body></html>`,
+    });
 
     console.log(`✅ OTP sent to ${email}: ${otp}`);
+
 
     res.status(200).json({
       success: true,
@@ -4571,26 +4529,21 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
       { upsert: true },
     );
 
-    const transporter = getTransporter();
-
-    const mailOptions = {
-      from: "FlyBook <hello@flybook.com.bd>",
+    await sendEmail({
       to: email,
       subject: "Password Reset Code - FlyBook",
-      html: `
-        <div style="font-family: Arial, sans-serif; max-width: 500px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
-          <h2 style="color: #3B82F6; text-align: center;">FlyBook Security</h2>
-          <p>We received a request to reset your password. Use the code below to proceed:</p>
-          <div style="background: #f4f7ff; padding: 20px; text-align: center; border-radius: 8px; margin: 20px 0;">
-            <span style="font-size: 32px; font-weight: bold; letter-spacing: 5px; color: #1e40af;">${otp}</span>
-          </div>
-          <p style="font-size: 13px; color: #666;">This code will expire in 10 minutes. If you didn't request this, please ignore this email.</p>
+      fromName: "FlyBook Security",
+      html: `<div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;padding:20px;border:1px solid #eee;border-radius:10px">
+        <h2 style="color:#3B82F6;text-align:center">FlyBook Security</h2>
+        <p>We received a request to reset your password. Use the code below to proceed:</p>
+        <div style="background:#f4f7ff;padding:20px;text-align:center;border-radius:8px;margin:20px 0">
+          <span style="font-size:32px;font-weight:bold;letter-spacing:5px;color:#1e40af">${otp}</span>
         </div>
-      `,
-    };
-
-    await transporter.sendMail(mailOptions);
+        <p style="font-size:13px;color:#666">This code will expire in 10 minutes. If you didn't request this, please ignore this email.</p>
+      </div>`,
+    });
     res.json({ success: true, message: "Reset code sent to your email" });
+
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
