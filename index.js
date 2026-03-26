@@ -101,6 +101,22 @@ const client = new MongoClient(uri, {
   directConnection: false, // Use SRV records for MongoDB Atlas
 });
 
+// Render Keep-Alive: Ping every 30 seconds to prevent sleep
+app.get("/ping", (req, res) => {
+  res.status(200).send("Alive");
+});
+
+setInterval(() => {
+  axios
+    .get("https://fly-book-server-production-6270.up.railway.app/ping")
+    .then(() => {
+      // Success - no log needed for production to keep it clean
+    })
+    .catch((err) => {
+      console.error("[Keep-Alive Error]:", err.message);
+    });
+}, 30000);
+
 /**
  * sendEmail - Uses SendGrid HTTP API (port 443) to bypass Render's SMTP blocking.
  * Render blocks all SMTP ports (25, 465, 587). Only HTTP API works reliably.
@@ -1158,7 +1174,6 @@ try {
   // Try to load the service account key from a local file
   // The user should place this file in the root directory
   const serviceAccount = JSON.parse(process.env.FIREBASE_CONFIG);
-  console.log("✅ Firebase Admin initialized successfully", serviceAccount);
   firebaseApp = admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
