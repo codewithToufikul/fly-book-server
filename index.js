@@ -5561,6 +5561,18 @@ app.post("/friend-request/send", async (req, res) => {
       { $push: { friendRequestsSent: new ObjectId(recipientId) } },
     );
 
+    // --- NEW: Trigger Push Notification for Friend Request ---
+    sendPushNotification(
+      recipientId,
+      "New Friend Request",
+      `${sender.name} sent you a friend request.`,
+      {
+        type: "FRIEND_REQUEST",
+        senderId: sender._id,
+        senderName: sender.name,
+      },
+    );
+
     res.json({ message: "Friend request sent successfully." });
   } catch (error) {
     console.error("Error sending friend request:", error);
@@ -5666,6 +5678,18 @@ app.post("/friend-request/accept", async (req, res) => {
       {
         $pull: { friendRequestsSent: new ObjectId(recipient._id) },
         $push: { friends: new ObjectId(recipient._id) },
+      },
+    );
+
+    // --- NEW: Trigger Push Notification for Accepted Friend Request ---
+    sendPushNotification(
+      sender._id,
+      "Friend Request Accepted",
+      `${recipient.name} accepted your friend request.`,
+      {
+        type: "FRIEND_ACCEPTED",
+        senderId: recipient._id,
+        senderName: recipient.name,
       },
     );
 
