@@ -108,7 +108,7 @@ app.get("/ping", (req, res) => {
 
 setInterval(() => {
   axios
-    .get("https://fly-book-server-production-6270.up.railway.app/ping")
+    .get("https://api.flybook.com.bd/ping")
     .then(() => {
       // Success - no log needed for production to keep it clean
     })
@@ -5104,6 +5104,33 @@ app.put("/admin/wallet/update-user", async (req, res) => {
       error: "Internal server error",
       message: "Failed to update user wallet.",
     });
+  }
+});
+
+// Check if a username exists (used for referral validation)
+app.get("/users/check-username", async (req, res) => {
+  const { userName } = req.query;
+
+  if (!userName) {
+    return res.status(400).json({ error: "Username is required." });
+  }
+
+  try {
+    const user = await usersCollections.findOne({
+      userName: userName.toLowerCase().trim(),
+    });
+
+    if (user) {
+      return res.json({
+        exists: true,
+        name: user.name,
+      });
+    } else {
+      return res.json({ exists: false });
+    }
+  } catch (error) {
+    console.error("Error checking username:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
