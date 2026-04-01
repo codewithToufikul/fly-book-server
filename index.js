@@ -1239,6 +1239,14 @@ const sendPushNotification = async (
       fcmData.title = String(title);
       fcmData.body = String(body);
 
+      // Log fcmData keys and types to debug
+      const types = Object.keys(fcmData).reduce((acc, key) => {
+        acc[key] = typeof fcmData[key];
+        return acc;
+      }, {});
+      console.log("🔍 FCM: Data being sent:", JSON.stringify(fcmData).substring(0, 50) + "...");
+      console.log("🔍 FCM: Data types:", JSON.stringify(types));
+
       const message = {
         token: user.fcmToken,
         notification: {
@@ -1262,7 +1270,7 @@ const sendPushNotification = async (
       console.log(`🚀 FCM: Message accepted by Google for userId: ${userId}`);
     }
   } catch (error) {
-    console.error("❌ FCM: Error sending notification:", error.message);
+    console.error("❌ FCM: Error sending notification [updated]:", error.message);
   }
 };
 
