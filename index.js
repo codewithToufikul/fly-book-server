@@ -1229,11 +1229,21 @@ const sendPushNotification = async (
       console.log(
         `🔍 FCM: Sending to User: ${userId}, Token: ${user.fcmToken.substring(0, 15)}...`,
       );
+      // Stringify all values in data for FCM compatibility
+      const fcmData = {};
+      if (data) {
+        Object.keys(data).forEach((key) => {
+          fcmData[key] = String(data[key]);
+        });
+      }
+      fcmData.title = String(title);
+      fcmData.body = String(body);
+
       const message = {
         token: user.fcmToken,
         notification: {
-          title: title,
-          body: body,
+          title: String(title),
+          body: String(body),
         },
         android: {
           priority: "high",
@@ -1246,11 +1256,7 @@ const sendPushNotification = async (
             visibility: "public",
           },
         },
-        data: {
-          ...data,
-          title: title,
-          body: body,
-        },
+        data: fcmData,
       };
       await admin.messaging().send(message);
       console.log(`🚀 FCM: Message accepted by Google for userId: ${userId}`);
