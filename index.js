@@ -3937,6 +3937,7 @@ app.get("/profile", async (req, res) => {
       friendRequestsSent: user.friendRequestsSent || [],
       friendRequestsReceived: user.friendRequestsReceived || [],
       friends: user.friends || [],
+      blockedUsers: user.blockedUsers || [],
       role: user.role || "user",
       referrerId: user.referrerId || null,
       referrerName: user.referrerName || user.referredBy || null,
@@ -6309,11 +6310,12 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
     const allExcludedIds = [...blockedIds, ...whoBlockedMe.map(u => u._id)].map(id => new ObjectId(id));
 
     const { userId } = req.query;
+    const excludedIds = allExcludedIds;
+    const excludedIdStrings = allExcludedIds.map(id => id.toString());
+    const combinedExcluded = [...excludedIds, ...excludedIdStrings];
+
     let query = {
-      $and: [
-        { userId: { $nin: allExcludedIds } },
-        { userId: { $nin: allExcludedIds.map(id => id.toString()) } } // Support both types
-      ]
+      userId: { $nin: combinedExcluded }
     };
 
     if (userId && userId !== "undefined" && userId !== "null") {
@@ -8003,18 +8005,36 @@ app.get("/api/home/fast-posts", async (req, res) => {
   const limit = parseInt(req.query.limit) || 10;
   const skip = (page - 1) * limit;
   const { category } = req.query;
-
   try {
     await connectToMongo();
-    if (!adminPostCollections) {
-      return res
-        .status(500)
-        .json({ error: "Database collections not initialized" });
+    if (!adminPostCollections || !usersCollections) {
+      return res.status(500).json({ error: "Database collections not initialized" });
+    }
+
+    const token = req.headers.authorization?.split(" ")[1];
+    let excludedIds = [];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        const currentUser = await usersCollections.findOne({ number: decoded.number });
+        if (currentUser) {
+          const blockedIds = currentUser.blockedUsers || [];
+          const whoBlockedMe = await usersCollections.find({ blockedUsers: currentUser._id }).project({ _id: 1 }).toArray();
+          const allExcluded = [...blockedIds, ...whoBlockedMe.map(u => u._id)].map(id => {
+            try { return new ObjectId(id); } catch(e) { return id; }
+          });
+          excludedIds = [...allExcluded, ...allExcluded.map(id => id.toString())];
+        }
+      } catch (e) { /* ignore token errors for public feed but ideally it should be valid */ }
     }
 
     let query = {};
     if (category && category !== "All") {
       query.category = category;
+    }
+
+    if (excludedIds.length > 0) {
+      query.userId = { $nin: excludedIds };
     }
 
     const posts = await adminPostCollections
