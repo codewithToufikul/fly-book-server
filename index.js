@@ -1244,7 +1244,10 @@ const sendPushNotification = async (
         acc[key] = typeof fcmData[key];
         return acc;
       }, {});
-      console.log("🔍 FCM: Data being sent:", JSON.stringify(fcmData).substring(0, 50) + "...");
+      console.log(
+        "🔍 FCM: Data being sent:",
+        JSON.stringify(fcmData).substring(0, 50) + "...",
+      );
       console.log("🔍 FCM: Data types:", JSON.stringify(types));
 
       const message = {
@@ -1270,7 +1273,10 @@ const sendPushNotification = async (
       console.log(`🚀 FCM: Message accepted by Google for userId: ${userId}`);
     }
   } catch (error) {
-    console.error("❌ FCM: Error sending notification [updated]:", error.message);
+    console.error(
+      "❌ FCM: Error sending notification [updated]:",
+      error.message,
+    );
   }
 };
 
@@ -3232,11 +3238,26 @@ app.post("/api/translate", async (req, res) => {
 // Combined search endpoint that matches the frontend implementation
 app.get("/search", async (req, res) => {
   try {
-    const searchQuery = req.query.q;
-    if (!searchQuery) {
-      return res.status(400).json({ message: "Search query is required." });
-    }
     const regex = new RegExp(searchQuery, "i");
+
+    // Get current user context if token provided
+    const token = req.headers.authorization?.split(" ")[1];
+    let currentUser = null;
+    let allExcludedIds = [];
+    if (token) {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        currentUser = await usersCollections.findOne({ number: decoded.number });
+        if (currentUser) {
+          const blockedIds = currentUser.blockedUsers || [];
+          const whoBlockedMe = await usersCollections.find({ blockedUsers: currentUser._id.toString() }).project({ _id: 1 }).toArray();
+          allExcludedIds = [...blockedIds, ...whoBlockedMe.map(u => u._id.toString())];
+        }
+      } catch (e) {
+        console.error("Search auth error:", e.message);
+      }
+    }
+
     let websiteResults = {};
     let aiResult = "No AI result found";
     // ✅ Fetch AI-generated result using Hugging Face Router API
@@ -3283,9 +3304,15 @@ app.get("/search", async (req, res) => {
 
     // ✅ Fetch website users
     try {
-      const users = await usersCollections
-        .find(
+      const userSearchQuery = {
+        $and: [
           { $or: [{ name: regex }, { userName: regex }] },
+          { _id: { $nin: allExcludedIds.map(id => ObjectId.isValid(id) ? new ObjectId(id) : id) } }
+        ]
+      };
+
+      const users = await usersCollections
+        .find(userSearchQuery,
           {
             projection: {
               name: 1,
@@ -3305,13 +3332,21 @@ app.get("/search", async (req, res) => {
 
     // ✅ Fetch opinions (text search + regex search)
     try {
-      const textSearchResults = await opinionCollections
-        .find({ $text: { $search: searchQuery } })
+      const opinionSearchQuery = {
+        $and: [
+          { $or: [
+            { $text: { $search: searchQuery } },
+            { userName: regex }
+          ]},
+          { userId: { $nin: allExcludedIds } }
+        ]
+      };
+      
+      const results = await opinionCollections
+        .find(opinionSearchQuery)
         .toArray();
-      const regexSearchResults = await opinionCollections
-        .find({ userName: regex })
-        .toArray();
-      websiteResults.opinions = [...textSearchResults, ...regexSearchResults];
+      
+      websiteResults.opinions = results;
     } catch (error) {
       console.error("Error fetching opinions:", error);
       websiteResults.opinions = [];
@@ -4247,10 +4282,21 @@ app.get("/api/user-profile/:userId", async (req, res) => {
   }
 
   try {
-    jwt.verify(token, JWT_SECRET); // Basic auth check
-
     if (!ObjectId.isValid(userId)) {
       return res.status(400).json({ error: "Invalid user ID" });
+    }
+
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    
+    if (currentUser) {
+      const isBlockedByMe = currentUser.blockedUsers?.includes(userId);
+      const targetUser = await usersCollections.findOne({ _id: new ObjectId(userId) });
+      const amIBlockedByThem = targetUser?.blockedUsers?.includes(currentUser._id.toString());
+      
+      if (isBlockedByMe || amIBlockedByThem) {
+        return res.status(404).json({ error: "User not found or blocked" });
+      }
     }
 
     const user = await usersCollections.findOne(
@@ -5515,6 +5561,100 @@ app.post("/reset-password/:id/:token", async (req, res) => {
   }
 });
 
+// User Blocking System
+app.post("/api/user/block", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { userId } = req.body;
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    if (!currentUser) return res.status(404).json({ error: "User not found" });
+
+    // 1. Add to blockedUsers list
+    await usersCollections.updateOne(
+      { _id: currentUser._id },
+      { $addToSet: { blockedUsers: userId } }
+    );
+
+    // 2. Perform mutual friendship cleanup
+    // Remove from each other's friends list
+    await usersCollections.updateOne(
+      { _id: currentUser._id },
+      { $pull: { friends: userId } }
+    );
+    await usersCollections.updateOne(
+      { _id: new ObjectId(userId) },
+      { $pull: { friends: currentUser._id.toString() } }
+    );
+
+    // 3. Remove any pending friend requests
+    await friendRequestCollections.deleteMany({
+      $or: [
+        { senderId: currentUser._id.toString(), recipientId: userId },
+        { senderId: userId, recipientId: currentUser._id.toString() }
+      ]
+    });
+
+    res.json({ success: true, message: "User blocked successfully" });
+  } catch (error) {
+    console.error("Error blocking user:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.post("/api/user/unblock", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  const { userId } = req.body;
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    if (!currentUser) return res.status(404).json({ error: "User not found" });
+
+    await usersCollections.updateOne(
+      { _id: currentUser._id },
+      { $pull: { blockedUsers: userId } }
+    );
+
+    res.json({ success: true, message: "User unblocked successfully" });
+  } catch (error) {
+    console.error("Error unblocking user:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.get("/api/user/blocked-list", async (req, res) => {
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    if (!currentUser) return res.status(404).json({ error: "User not found" });
+
+    const blockedIds = currentUser.blockedUsers || [];
+    const blockedUsers = await usersCollections.find({
+      _id: { $in: blockedIds.map(id => new ObjectId(id)) }
+    }).project({ name: 1, userName: 1, profileImage: 1 }).toArray();
+
+    res.json({ success: true, data: blockedUsers });
+  } catch (error) {
+    console.error("Error fetching blocked list:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
 // peoples api
 // peoples api - Only return users excluding the logged-in user
 app.get("/peoples", async (req, res) => {
@@ -5527,12 +5667,20 @@ app.get("/peoples", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const blockedIds = currentUser?.blockedUsers || [];
 
-    // Exclude the logged-in user and exclude passwords
+    // Exclude the logged-in user, blocked users, and users who have blocked the current user
     const result = await usersCollections
       .find(
-        { number: { $ne: decoded.number } }, // Filter users excluding the logged-in user's number
-        { projection: { password: 0 } }, // Exclude the password field
+        { 
+          $and: [
+            { number: { $ne: decoded.number } },
+            { _id: { $nin: blockedIds.map(id => new ObjectId(id)) } },
+            { blockedUsers: { $ne: currentUser._id } }
+          ]
+        },
+        { projection: { password: 0 } },
       )
       .toArray();
 
@@ -6142,15 +6290,32 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
       return res.status(500).json({ error: "Opinion collection not found" });
     }
 
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const blockedIds = currentUser?.blockedUsers || [];
+    const whoBlockedMe = await usersCollections.find({ blockedUsers: currentUser._id }).project({ _id: 1 }).toArray();
+    const allExcludedIds = [...blockedIds, ...whoBlockedMe.map(u => u._id)].map(id => new ObjectId(id));
+
     const { userId } = req.query;
-    let query = {};
+    let query = {
+      $and: [
+        { userId: { $nin: allExcludedIds } },
+        { userId: { $nin: allExcludedIds.map(id => id.toString()) } } // Support both types
+      ]
+    };
+
     if (userId && userId !== "undefined" && userId !== "null") {
+      // If specific userId is requested, check if it's blocked
+      if (allExcludedIds.some(id => id.toString() === userId.toString())) {
+        return res.json({ success: true, data: [], hasMore: false, page });
+      }
+
       if (ObjectId.isValid(userId)) {
-        query = {
+        query.$and.push({
           $or: [{ userId: new ObjectId(userId) }, { userId: userId }],
-        };
+        });
       } else {
-        query = { userId: userId };
+        query.$and.push({ userId: userId });
       }
     }
 
