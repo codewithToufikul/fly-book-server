@@ -5592,13 +5592,25 @@ app.post("/api/user/block", async (req, res) => {
       { $pull: { friends: currentUser._id.toString() } }
     );
 
-    // 3. Remove any pending friend requests
-    await friendRequestCollections.deleteMany({
-      $or: [
-        { senderId: currentUser._id.toString(), recipientId: userId },
-        { senderId: userId, recipientId: currentUser._id.toString() }
-      ]
-    });
+    // 3. Remove any pending friend requests from arrays
+    await usersCollections.updateOne(
+      { _id: currentUser._id },
+      { 
+        $pull: { 
+          friendRequestsSent: userId,
+          friendRequestsReceived: userId 
+        } 
+      }
+    );
+    await usersCollections.updateOne(
+      { _id: new ObjectId(userId) },
+      { 
+        $pull: { 
+          friendRequestsSent: currentUser._id.toString(),
+          friendRequestsReceived: currentUser._id.toString() 
+        } 
+      }
+    );
 
     res.json({ success: true, message: "User blocked successfully" });
   } catch (error) {
