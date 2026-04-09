@@ -6361,9 +6361,7 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
     const excludedIdStrings = allExcludedIds.map(id => id.toString());
     const combinedExcluded = [...excludedIds, ...excludedIdStrings];
 
-    let query = {
-      userId: { $nin: combinedExcluded }
-    };
+    let query = {};
 
     if (userId && userId !== "undefined" && userId !== "null") {
       // If specific userId is requested, check if it's blocked
@@ -6372,12 +6370,22 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
       }
 
       if (ObjectId.isValid(userId)) {
-        query.$and.push({
-          $or: [{ userId: new ObjectId(userId) }, { userId: userId }],
-        });
+        query = {
+          $and: [
+            { userId: { $nin: combinedExcluded } },
+            { $or: [{ userId: new ObjectId(userId) }, { userId: userId }] },
+          ],
+        };
       } else {
-        query.$and.push({ userId: userId });
+        query = {
+          $and: [
+            { userId: { $nin: combinedExcluded } },
+            { userId: userId },
+          ],
+        };
       }
+    } else {
+      query = { userId: { $nin: combinedExcluded } };
     }
 
     const posts = await opinionCollections
