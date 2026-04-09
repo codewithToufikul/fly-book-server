@@ -3237,6 +3237,7 @@ app.post("/api/translate", async (req, res) => {
 
 // Combined search endpoint that matches the frontend implementation
 app.get("/search", async (req, res) => {
+  const searchQuery = req.query.q || "";
   try {
     const regex = new RegExp(searchQuery, "i");
 
@@ -3250,8 +3251,15 @@ app.get("/search", async (req, res) => {
         currentUser = await usersCollections.findOne({ number: decoded.number });
         if (currentUser) {
           const blockedIds = currentUser.blockedUsers || [];
-          const whoBlockedMe = await usersCollections.find({ blockedUsers: currentUser._id.toString() }).project({ _id: 1 }).toArray();
-          allExcludedIds = [...blockedIds, ...whoBlockedMe.map(u => u._id.toString())];
+          const whoBlockedMe = await usersCollections.find({ 
+            blockedUsers: { $in: [currentUser._id, currentUser._id.toString()] } 
+          }).project({ _id: 1 }).toArray();
+          
+          const allBlocked = [...blockedIds, ...whoBlockedMe.map(u => u._id)];
+          const combinedExcluded = allBlocked.map(id => {
+            try { return new ObjectId(id); } catch(e) { return id; }
+          });
+          allExcludedIds = [...new Set([...combinedExcluded, ...combinedExcluded.map(id => id.toString())])];
         }
       } catch (e) {
         console.error("Search auth error:", e.message);
@@ -3330,7 +3338,6 @@ app.get("/search", async (req, res) => {
       websiteResults.users = [];
     }
 
-    // ✅ Fetch opinions (text search + regex search)
     try {
       const opinionSearchQuery = {
         $and: [
@@ -5681,17 +5688,30 @@ app.get("/peoples", async (req, res) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const currentUser = await usersCollections.findOne({ number: decoded.number });
-    const blockedIds = currentUser?.blockedUsers || [];
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
+    const blockedByCurrent = (currentUser.blockedUsers || []).map(id => id.toString());
+    const usersWhoBlockedMe = await usersCollections
+      .find({
+        blockedUsers: { $in: [currentUser._id, currentUser._id.toString()] },
+      })
+      .toArray();
+    const blockedMeIds = usersWhoBlockedMe.map((u) => u._id.toString());
+
+    const allExcludedIds = [
+      ...new Set([...blockedByCurrent, ...blockedMeIds]),
+    ].map((id) => new ObjectId(id));
 
     // Exclude the logged-in user, blocked users, and users who have blocked the current user
     const result = await usersCollections
       .find(
-        { 
+        {
           $and: [
             { number: { $ne: decoded.number } },
-            { _id: { $nin: blockedIds.map(id => new ObjectId(id)) } },
-            { blockedUsers: { $ne: currentUser._id } }
-          ]
+            { _id: { $nin: allExcludedIds } },
+          ],
         },
         { projection: { password: 0 } },
       )
@@ -6074,7 +6094,14 @@ app.get("/api/user-friends/:userId", async (req, res) => {
   }
 
   try {
-    jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
+    if (!currentUser) {
+      return res.status(404).json({ error: "User not found" });
+    }
 
     if (!ObjectId.isValid(userId)) {
       return res.status(400).json({ error: "Invalid user ID" });
@@ -6095,9 +6122,24 @@ app.get("/api/user-friends/:userId", async (req, res) => {
       return res.json({ success: true, data: [], userName: user.name });
     }
 
+    const blockedByCurrent = (currentUser.blockedUsers || []).map((id) =>
+      id.toString(),
+    );
+    const usersWhoBlockedMe = await usersCollections
+      .find({
+        blockedUsers: { $in: [currentUser._id, currentUser._id.toString()] },
+      })
+      .toArray();
+    const blockedMeIds = usersWhoBlockedMe.map((u) => u._id.toString());
+
+    const allExcludedIds = [...new Set([...blockedByCurrent, ...blockedMeIds])];
+
     const friends = await usersCollections
       .find({
-        _id: { $in: friendsIds.map((id) => new ObjectId(id)) },
+        $and: [
+          { _id: { $in: friendsIds.map((id) => new ObjectId(id)) } },
+          { _id: { $nin: allExcludedIds.map((id) => new ObjectId(id)) } },
+        ],
       })
       .project({
         name: 1,
