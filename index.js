@@ -3767,13 +3767,13 @@ app.post("/users/register", async (req, res) => {
 
 // User Login Route
 app.post("/users/login", async (req, res) => {
-  const { number, password } = req.body;
-  console.log("Login attempt:", number, password);
+  const { number, email, password } = req.body;
+  console.log("Login attempt:", number || email, password);
   // Input validation
-  if (!number || !password) {
+  if ((!number && !email) || !password) {
     return res
       .status(400)
-      .json({ success: false, message: "Number and password are required" });
+      .json({ success: false, message: "Identifier (number or email) and password are required" });
   }
 
   try {
@@ -3790,24 +3790,29 @@ app.post("/users/login", async (req, res) => {
       });
     }
 
-    // Enhanced search for Bangladesh numbers (supports both legacy and international formats)
-    let query = { number: number };
-    if (number.startsWith("+880")) {
-      const legacyFormat = "0" + number.slice(4);
-      query = { $or: [{ number: number }, { number: legacyFormat }] };
-    } else if (number.startsWith("0") && number.length === 11) {
-      const internationalFormat = "+880" + number.slice(1);
-      query = { $or: [{ number: number }, { number: internationalFormat }] };
-    } else if (number.startsWith("880")) {
-      const legacyFormat = "0" + number.slice(3);
-      const internationalFormat = "+" + number;
-      query = {
-        $or: [
-          { number: number },
-          { number: legacyFormat },
-          { number: internationalFormat },
-        ],
-      };
+    let query = {};
+    if (email) {
+      query = { email: email.toLowerCase().trim() };
+    } else {
+      // Enhanced search for Bangladesh numbers (supports both legacy and international formats)
+      query = { number: number };
+      if (number.startsWith("+880")) {
+        const legacyFormat = "0" + number.slice(4);
+        query = { $or: [{ number: number }, { number: legacyFormat }] };
+      } else if (number.startsWith("0") && number.length === 11) {
+        const internationalFormat = "+880" + number.slice(1);
+        query = { $or: [{ number: number }, { number: internationalFormat }] };
+      } else if (number.startsWith("880")) {
+        const legacyFormat = "0" + number.slice(3);
+        const internationalFormat = "+" + number;
+        query = {
+          $or: [
+            { number: number },
+            { number: legacyFormat },
+            { number: internationalFormat },
+          ],
+        };
+      }
     }
 
     const user = await usersCollections.findOne(query);
@@ -3815,14 +3820,14 @@ app.post("/users/login", async (req, res) => {
     if (!user) {
       return res
         .status(401)
-        .json({ success: false, message: "Invalid number or password" });
+        .json({ success: false, message: "Invalid credentials" });
     }
 
     const isPasswordValid = await bcrypt.compare(password, user.password);
     if (!isPasswordValid) {
       return res
         .status(401)
-        .json({ success: false, message: "Invalid number or password" });
+        .json({ success: false, message: "Invalid credentials" });
     }
 
     // Generate JWT token
