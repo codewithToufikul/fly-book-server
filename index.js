@@ -13816,6 +13816,45 @@ app.patch("/api/social-response/appointments/:id/status", verifyTokenEarly, asyn
   }
 });
 
+// Admin: Get all social response professionals/applications
+app.get("/api/admin/social-response/professionals", verifyTokenEarly, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    const professionals = await socialProfessionalsCollection
+      .find({})
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    res.json({ success: true, data: professionals });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Admin: Update professional status (approve/reject)
+app.patch("/api/admin/social-response/professionals/:id/status", verifyTokenEarly, async (req, res) => {
+  try {
+    if (req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    const { status } = req.body; // approved, rejected
+    const profId = new ObjectId(req.params.id);
+
+    await socialProfessionalsCollection.updateOne(
+      { _id: profId },
+      { $set: { status, updatedAt: new Date() } }
+    );
+
+    res.json({ success: true, message: `Status updated to ${status}` });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Get appointments for current user
 app.get("/api/social-response/my-appointments", verifyTokenEarly, async (req, res) => {
   try {
