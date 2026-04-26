@@ -152,11 +152,23 @@ const sendEmail = async ({ to, subject, html, fromName = "FlyBook" }) => {
     console.log(`✅ Email sent to ${to} via SendGrid HTTP API`);
     return { success: true };
   } catch (error) {
-    const errMsg = error.response?.data?.errors?.[0]?.message || error.message;
     console.error(`❌ SendGrid API Error: ${errMsg}`);
     throw new Error(errMsg);
   }
 };
+
+const socialProfessionalsCollection = client
+  .db("flybook")
+  .collection("socialProfessionals");
+const socialAppointmentsCollection = client
+  .db("flybook")
+  .collection("socialAppointments");
+const socialComplaintsCollection = client
+  .db("flybook")
+  .collection("socialComplaints");
+const conversationsCollection = client
+  .db("flybook")
+  .collection("conversations");
 
 // (audio upload route is defined after audioUpload is initialized)
 
@@ -13560,6 +13572,296 @@ app.delete("/upload/video/:publicId", async (req, res) => {
   }
 })();
 
+app.post("/api/social-response/complaint", async (req, res) => {
+  try {
+    const { name, phone, email, location, message, priority } = req.body;
+
+    const transporter = getTransporter();
+
+    const mailOptions = {
+      from: "FlyBook Support <hello@flybook.com.bd>",
+      to: "hello@flybook.com.bd",
+      subject: `New Social Responsibility Complaint: ${priority.toUpperCase()}`,
+      html: `
+        <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
+          <h2 style="color: #EF4444;">New Social Response Complaint</h2>
+          <p><strong>Name:</strong> ${name}</p>
+          <p><strong>Phone:</strong> ${phone}</p>
+          <p><strong>Email:</strong> ${email || "Not provided"}</p>
+          <p><strong>Location:</strong> ${location || "Not provided"}</p>
+          <p><strong>Priority:</strong> <span style="padding: 2px 8px; border-radius: 4px; background: #FEF2F2; color: #EF4444; font-weight: bold;">${priority.toUpperCase()}</span></p>
+          <div style="margin-top: 20px; padding: 15px; background: #F3F4F6; border-radius: 8px;">
+            <p><strong>Complaint Message:</strong></p>
+            <p>${message}</p>
+          </div>
+          <p style="margin-top: 20px; font-size: 12px; color: #6B7280;">Sent via FlyBook Social Responsibility Services</p>
+        </div>
+      `,
+    };
+
+    await transporter.sendMail(mailOptions);
+
+    // Save to database
+    const complaint = {
+      ...req.body,
+      status: "pending",
+      createdAt: new Date(),
+    };
+    await socialComplaintsCollection.insertOne(complaint);
+
+    res.json({ success: true, message: "Complaint submitted successfully" });
+  } catch (error) {
+    console.error("Complaint Submit Error:", error);
+    res.status(500).json({ success: false, message: "Failed to submit complaint" });
+  }
+});
+
+// Apply as a professional (Doctor/Lawyer)
+app.post("/api/social-response/apply", verifyTokenEarly, async (req, res) => {
+  try {
+    const application = {
+      ...req.body,
+      userId: new ObjectId(req.user._id),
+      status: "pending", // Requires admin approval
+      isAvailable: true,
+      createdAt: new Date(),
+    };
+
+    const existing = await socialProfessionalsCollection.findOne({
+      userId: new ObjectId(req.user._id),
+      type: req.body.type,
+    });
+
+    if (existing) {
+      return res.status(400).json({
+        success: false,
+        message: "You have already applied for this service",
+      });
+    }
+
+    const result = await socialProfessionalsCollection.insertOne(application);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Get approved professionals
+app.get("/api/social-response/professionals", async (req, res) => {
+  try {
+    const { type } = req.query;
+    const query = { status: "approved" };
+    if (type) query.type = type;
+
+    const professionals = await socialProfessionalsCollection
+      .find(query)
+      .toArray();
+    res.json({ success: true, data: professionals });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Book an appointment
+app.post("/api/social-response/book", verifyTokenEarly, async (req, res) => {
+  try {
+    const { professionalId, date, time, reason } = req.body;
+
+    const appointment = {
+      professionalId: new ObjectId(professionalId),
+      userId: new ObjectId(req.user._id),
+      date,
+      time,
+      reason,
+      status: "pending", // pending, accepted, completed, cancelled
+      createdAt: new Date(),
+    };
+
+    const result = await socialAppointmentsCollection.insertOne(appointment);
+
+    // Notify professional
+    const professional = await socialProfessionalsCollection.findOne({
+      _id: new ObjectId(professionalId),
+    });
+    if (professional) {
+      sendPushNotification(
+        professional.userId,
+        "New Appointment!",
+        `You have a new appointment request for ${date} at ${time}`,
+        { appointmentId: result.insertedId.toString(), type: "SOCIAL_APPOINTMENT" },
+      );
+    }
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Check if current user is an approved professional
+app.get("/api/social-response/my-professional-status", verifyTokenEarly, async (req, res) => {
+  try {
+    const userId = new ObjectId(req.user._id);
+    const professional = await socialProfessionalsCollection.findOne({ userId });
+    if (!professional) {
+      return res.json({ success: true, isProfessional: false, data: null });
+    }
+    res.json({ success: true, isProfessional: true, data: professional });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Get incoming appointments for a professional (dashboard)
+app.get("/api/social-response/professional-dashboard", verifyTokenEarly, async (req, res) => {
+  try {
+    const userId = new ObjectId(req.user._id);
+    const professional = await socialProfessionalsCollection.findOne({ userId });
+    if (!professional) {
+      return res.status(403).json({ success: false, message: "Not a professional" });
+    }
+
+    const appointments = await socialAppointmentsCollection
+      .find({ professionalId: professional._id })
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    const enriched = await Promise.all(appointments.map(async (apt) => {
+      const patient = await usersCollections.findOne({ _id: apt.userId });
+      return {
+        ...apt,
+        patientName: patient?.name || "Unknown",
+        patientPhone: patient?.phone || "",
+      };
+    }));
+
+    const stats = {
+      total: enriched.length,
+      pending: enriched.filter(a => a.status === 'pending').length,
+      approved: enriched.filter(a => a.status === 'approved').length,
+      cancelled: enriched.filter(a => a.status === 'cancelled').length,
+      finished: enriched.filter(a => a.status === 'finished').length,
+    };
+
+    res.json({ success: true, data: enriched, stats, professional });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update appointment status (Accept/Decline)
+app.patch("/api/social-response/appointments/:id/status", verifyTokenEarly, async (req, res) => {
+  try {
+    const { status } = req.body; // accepted, cancelled, completed
+    const appointmentId = new ObjectId(req.params.id);
+
+    const appointment = await socialAppointmentsCollection.findOne({ _id: appointmentId });
+    if (!appointment) {
+      return res.status(404).json({ success: false, message: "Appointment not found" });
+    }
+
+    // Verify if the user is the professional
+    const professional = await socialProfessionalsCollection.findOne({ 
+      _id: appointment.professionalId,
+      userId: new ObjectId(req.user._id)
+    });
+
+    if (!professional && req.user.role !== 'admin') {
+      return res.status(403).json({ success: false, message: "Unauthorized" });
+    }
+
+    await socialAppointmentsCollection.updateOne(
+      { _id: appointmentId },
+      { $set: { status, updatedAt: new Date() } }
+    );
+
+    if (status === "approved") {
+      // Create or find conversation for Social Response
+      const participants = [
+        new ObjectId(appointment.userId),
+        new ObjectId(req.user._id), // The professional
+      ];
+
+      // Check if conversation already exists
+      const existingConv = await conversationsCollection.findOne({
+        participants: { $all: participants },
+        category: "social_response",
+      });
+
+      if (!existingConv) {
+        await conversationsCollection.insertOne({
+          participants,
+          category: "social_response",
+          isGroup: false,
+          unreadCount: {},
+          mutedBy: [],
+          lastMessageAt: new Date(),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        });
+      }
+    }
+
+    // Notify user
+    sendPushNotification(
+      appointment.userId,
+      "Appointment Update",
+      `Your appointment request has been ${status}`,
+      { appointmentId: appointmentId.toString(), status, type: "SOCIAL_APPOINTMENT_UPDATE" }
+    );
+
+    res.json({ success: true, message: `Appointment ${status}` });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Get appointments for current user
+app.get("/api/social-response/my-appointments", verifyTokenEarly, async (req, res) => {
+  try {
+    const userId = new ObjectId(req.user._id);
+
+    // Check if the user is also a professional
+    const professional = await socialProfessionalsCollection.findOne({ userId });
+
+    let query = {};
+    if (professional) {
+      // Get appointments where I am the professional OR the patient
+      query = {
+        $or: [
+          { userId: userId },
+          { professionalId: professional._id }
+        ]
+      };
+    } else {
+      // Just a patient
+      query = { userId: userId };
+    }
+
+    const appointments = await socialAppointmentsCollection
+      .find(query)
+      .sort({ createdAt: -1 })
+      .toArray();
+
+    // Attach names
+    const enriched = await Promise.all(appointments.map(async (apt) => {
+        const prof = await socialProfessionalsCollection.findOne({ _id: apt.professionalId });
+        const patient = await usersCollections.findOne({ _id: apt.userId });
+        return {
+            ...apt,
+            professionalName: prof?.name,
+            patientName: patient?.name,
+            type: prof?.type,
+            professionalUserId: prof?.userId?.toString(), // ✅ needed for deep link chat
+        };
+    }));
+
+    res.json({ success: true, data: enriched });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 // Global error handler - Must be before server starts
 app.use((err, req, res, next) => {
   console.error("Global error handler:", err);
@@ -13601,50 +13903,6 @@ process.on("unhandledRejection", (err) => {
 });
 
 // Handle uncaught exceptions
-// Social Responsibility Complaint endpoint
-app.post("/api/social-response/complaint", async (req, res) => {
-  try {
-    const { name, phone, email, location, message, priority } = req.body;
-
-    // Configure email transporter
-    const transporter = getTransporter();
-
-    // Email content
-    const mailOptions = {
-      from: "FlyBook Support <hello@flybook.com.bd>",
-      to: "hello@flybook.com.bd", // Send to the same email or a specific support email
-      subject: `New Social Responsibility Complaint: ${priority.toUpperCase()}`,
-      html: `
-        <div style="font-family: Arial, sans-serif; padding: 20px; color: #333;">
-          <h2 style="color: #EF4444;">New Social Response Complaint</h2>
-          <p><strong>Name:</strong> ${name}</p>
-          <p><strong>Phone:</strong> ${phone}</p>
-          <p><strong>Email:</strong> ${email || "Not provided"}</p>
-          <p><strong>Location:</strong> ${location || "Not provided"}</p>
-          <p><strong>Priority:</strong> <span style="padding: 2px 8px; border-radius: 4px; background: #FEF2F2; color: #EF4444; font-weight: bold;">${priority.toUpperCase()}</span></p>
-          <div style="margin-top: 20px; padding: 15px; background: #F3F4F6; border-radius: 8px;">
-            <p><strong>Complaint Message:</strong></p>
-            <p>${message}</p>
-          </div>
-          <p style="margin-top: 20px; font-size: 12px; color: #6B7280;">Sent via FlyBook Social Responsibility Services</p>
-        </div>
-      `,
-    };
-
-    await transporter.sendMail(mailOptions);
-
-    res.json({
-      success: true,
-      message: "Complaint submitted and email sent successfully",
-    });
-  } catch (error) {
-    console.error("Social Response Complaint Error:", error);
-    res
-      .status(500)
-      .json({ success: false, message: "Failed to process complaint" });
-  }
-});
-
 process.on("uncaughtException", (err) => {
   console.error("Uncaught Exception:", err);
   process.exit(1);
