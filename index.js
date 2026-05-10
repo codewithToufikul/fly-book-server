@@ -53,19 +53,23 @@ const corsOptions = {
 
     const allowedOrigins = [
       "https://flybook.com.bd",
+      "https://www.flybook.com.bd",
       "https://flybook-f23c5.web.app",
       "http://localhost:5173",
+      "http://localhost:3000",
     ];
-    if (allowedOrigins.indexOf(origin) !== -1) {
+
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith(".onrender.com")) {
       callback(null, true);
     } else {
-      callback(null, true); // Allow all origins for now to prevent CORS issues
+      // In production, you might want to be more restrictive, 
+      // but for now we allow the request and let the header be set
+      callback(null, true);
     }
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
   credentials: true,
-  preflightContinue: false,
   optionsSuccessStatus: 204,
 };
 
@@ -13653,10 +13657,65 @@ app.get("/api/social-response/professionals", async (req, res) => {
     const query = { status: "approved" };
     if (type) query.type = type;
 
-    const professionals = await socialProfessionalsCollection
-      .find(query)
-      .toArray();
-    res.json({ success: true, data: professionals });
+    const professionals = await socialProfessionalsCollection.aggregate([
+      { $match: query },
+      {
+        $lookup: {
+          from: "users",
+          localField: "userId",
+          foreignField: "_id",
+          as: "userDetails"
+        }
+      },
+      {
+        $addFields: {
+          profileImage: { $arrayElemAt: ["$userDetails.profileImage", 0] }
+        }
+      },
+      {
+        $project: { userDetails: 0 }
+      }
+    ]).toArray();
+
+    // Filter by active hours AND daily limit
+    const now = new Date();
+    const currentMinutes = now.getHours() * 60 + now.getMinutes();
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    // Get appointment counts for all professionals today to hide those at limit
+    const dailyCounts = await socialAppointmentsCollection.aggregate([
+      { $match: { createdAt: { $gte: startOfDay }, status: { $in: ['pending', 'approved'] } } },
+      { $group: { _id: "$professionalId", count: { $sum: 1 } } }
+    ]).toArray();
+
+    const countMap = dailyCounts.reduce((acc, curr) => {
+      acc[curr._id.toString()] = curr.count;
+      return acc;
+    }, {});
+
+    const filtered = professionals.filter(p => {
+      // 1. Check Daily Limit (Requirement 5)
+      if (p.messageLimit) {
+        const count = countMap[p._id.toString()] || 0;
+        if (count >= p.messageLimit) return false;
+      }
+
+      // 2. Check Active Hours
+      if (!p.activeStartTime || !p.activeEndTime) return true;
+      const [startH, startM] = p.activeStartTime.split(':').map(Number);
+      const [endH, endM] = p.activeEndTime.split(':').map(Number);
+      const startMin = startH * 60 + startM;
+      const endMin = endH * 60 + endM;
+
+      if (startMin <= endMin) {
+        return currentMinutes >= startMin && currentMinutes <= endMin;
+      } else {
+        return currentMinutes >= startMin || currentMinutes <= endMin;
+      }
+    });
+
+    res.json({ success: true, data: filtered });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -13666,6 +13725,39 @@ app.get("/api/social-response/professionals", async (req, res) => {
 app.post("/api/social-response/book", verifyTokenEarly, async (req, res) => {
   try {
     const { professionalId, date, time, reason } = req.body;
+    const userId = new ObjectId(req.user._id);
+
+    // Requirement 4: Patient cannot book more than 3 active appointments
+    const activePatientBookings = await socialAppointmentsCollection.countDocuments({
+      userId,
+      status: { $in: ['pending', 'approved'] }
+    });
+
+    if (activePatientBookings >= 3) {
+      return res.status(400).json({
+        success: false,
+        message: "You already have 3 active appointment requests. Please wait for them to be completed or declined before booking more."
+      });
+    }
+    const professional = await socialProfessionalsCollection.findOne({
+      _id: new ObjectId(professionalId),
+    });
+
+    if (professional?.messageLimit) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
+      const dailyCount = await socialAppointmentsCollection.countDocuments({
+        professionalId: new ObjectId(professionalId),
+        status: { $in: ['pending', 'approved'] },
+        createdAt: { $gte: startOfDay },
+      });
+      if (dailyCount >= professional.messageLimit) {
+        return res.status(400).json({
+          success: false,
+          message: `This professional has reached their daily limit of ${professional.messageLimit} appointments. Please try again tomorrow.`,
+        });
+      }
+    }
 
     const appointment = {
       professionalId: new ObjectId(professionalId),
@@ -13673,16 +13765,12 @@ app.post("/api/social-response/book", verifyTokenEarly, async (req, res) => {
       date,
       time,
       reason,
-      status: "pending", // pending, accepted, completed, cancelled
+      status: "pending",
       createdAt: new Date(),
     };
 
     const result = await socialAppointmentsCollection.insertOne(appointment);
 
-    // Notify professional
-    const professional = await socialProfessionalsCollection.findOne({
-      _id: new ObjectId(professionalId),
-    });
     if (professional) {
       sendPushNotification(
         professional.userId,
@@ -13732,6 +13820,7 @@ app.get("/api/social-response/professional-dashboard", verifyTokenEarly, async (
         ...apt,
         patientName: patient?.name || "Unknown",
         patientPhone: patient?.phone || "",
+        patientImage: patient?.profileImage || "",
       };
     }));
 
@@ -13896,6 +13985,44 @@ app.get("/api/social-response/my-appointments", verifyTokenEarly, async (req, re
     }));
 
     res.json({ success: true, data: enriched });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update professional profile (bio, clinic, degrees, etc.)
+app.patch("/api/social-response/my-professional", verifyTokenEarly, async (req, res) => {
+  try {
+    const userId = new ObjectId(req.user._id);
+    const allowedFields = ['bio', 'clinic', 'address', 'degrees', 'certifications', 'consultationFee', 'availableHours', 'availableDays', 'activeStartTime', 'activeEndTime', 'locations'];
+    const update = {};
+    allowedFields.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
+    if (Object.keys(update).length === 0) {
+      return res.status(400).json({ success: false, message: 'No valid fields to update' });
+    }
+    await socialProfessionalsCollection.updateOne(
+      { userId },
+      { $set: { ...update, updatedAt: new Date() } }
+    );
+    res.json({ success: true, message: 'Profile updated successfully' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Update professional monthly appointment limit
+app.patch("/api/social-response/my-message-limit", verifyTokenEarly, async (req, res) => {
+  try {
+    const userId = new ObjectId(req.user._id);
+    const { limit } = req.body;
+    if (typeof limit !== 'number' || limit < 1 || limit > 200) {
+      return res.status(400).json({ success: false, message: 'Limit must be between 1 and 200' });
+    }
+    await socialProfessionalsCollection.updateOne(
+      { userId },
+      { $set: { messageLimit: limit, updatedAt: new Date() } }
+    );
+    res.json({ success: true, message: 'Daily appointment limit updated', limit });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
