@@ -19,6 +19,14 @@ const { translate } = require("@vitalets/google-translate-api");
 const PDFDocument = require("pdfkit");
 const stream = require("stream");
 const dns = require("dns");
+const fs = require("fs");
+const path = require("path");
+
+// Ensure public/pdfs directory exists
+const publicDir = path.join(__dirname, "public");
+const pdfsDir = path.join(publicDir, "pdfs");
+if (!fs.existsSync(publicDir)) fs.mkdirSync(publicDir);
+if (!fs.existsSync(pdfsDir)) fs.mkdirSync(pdfsDir);
 
 // Prefer IPv4 first to avoid DNS resolution issues in some environments
 try {
@@ -28,6 +36,7 @@ try {
 } catch (_) {}
 
 const app = express();
+app.use("/public", express.static(publicDir));
 const port = process.env.PORT || 3000;
 
 // Performance: Compression middleware (gzip/brotli)
@@ -59,16 +68,24 @@ const corsOptions = {
       "http://localhost:3000",
     ];
 
-    if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith(".onrender.com")) {
+    if (
+      allowedOrigins.indexOf(origin) !== -1 ||
+      origin.endsWith(".onrender.com")
+    ) {
       callback(null, true);
     } else {
-      // In production, you might want to be more restrictive, 
+      // In production, you might want to be more restrictive,
       // but for now we allow the request and let the header be set
       callback(null, true);
     }
   },
   methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-  allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With", "Accept"],
+  allowedHeaders: [
+    "Content-Type",
+    "Authorization",
+    "X-Requested-With",
+    "Accept",
+  ],
   credentials: true,
   optionsSuccessStatus: 204,
 };
@@ -156,6 +173,10 @@ const sendEmail = async ({ to, subject, html, fromName = "FlyBook" }) => {
     console.log(`✅ Email sent to ${to} via SendGrid HTTP API`);
     return { success: true };
   } catch (error) {
+    const errMsg =
+      error?.response?.data?.errors?.[0]?.message ||
+      error?.message ||
+      "Failed to send email";
     console.error(`❌ SendGrid API Error: ${errMsg}`);
     throw new Error(errMsg);
   }
@@ -885,6 +906,9 @@ app.get(
                   passed: latestAttempt.passed,
                   graded: latestAttempt.graded,
                   createdAt: latestAttempt.createdAt,
+                  startedAt: latestAttempt.startedAt || null,
+                  submittedAt: latestAttempt.submittedAt || null,
+                  identityNumber: latestAttempt.identityNumber || null,
                   correctAnswers: latestAttempt.correctAnswers,
                   totalQuestions: latestAttempt.totalQuestions,
                   // Include full answers for display
@@ -906,6 +930,7 @@ app.get(
             name: student.name,
             number: student.number,
             profileImage: student.profileImage,
+            identityNumber: studentAttempts.find((att) => att.identityNumber)?.identityNumber || null,
           },
           statistics: {
             totalAttempts,
@@ -1880,6 +1905,7 @@ app.post("/communities/:id/posts", verifyTokenEarly, async (req, res) => {
           type: ch.exam.type, // quiz | written | listening
           questions: Array.isArray(ch.exam.questions) ? ch.exam.questions : [],
           passingScore: Number(ch.exam.passingScore || 0),
+          timeLimitMinutes: Number(ch.exam.timeLimitMinutes || 0),
           createdAt: new Date(),
         });
       }
@@ -1969,7 +1995,7 @@ app.get("/communities/:id/posts", async (req, res) => {
 
     const posts = await communityPostsCollection
       .find({ communityId: communityObjId })
-      .sort({ createdAt: -1 })
+      .sort({ isPinned: -1, createdAt: -1 })
       .toArray();
 
     const filtered = posts.filter((p) => {
@@ -2014,6 +2040,54 @@ app.get("/posts/:postId/course", async (req, res) => {
     return res.json({ success: true, courseId: course._id });
   } catch (error) {
     console.error("GET /posts/:postId/course error:", error);
+    return res
+      .status(500)
+      .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Pin / Unpin a community post
+app.post("/posts/:postId/pin", verifyTokenEarly, async (req, res) => {
+  try {
+    const { postId } = req.params;
+    const { pin } = req.body; // boolean
+    let postObjId;
+    try {
+      postObjId = new ObjectId(postId);
+    } catch {
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid post id" });
+    }
+
+    const post = await communityPostsCollection.findOne({ _id: postObjId });
+    if (!post) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Post not found" });
+    }
+
+    // Role check
+    const role = await getCommunityRole(req.user._id, post.communityId);
+    if (!role.exists) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Community not found" });
+    }
+    if (!(role.isMainAdmin || role.isAdmin || role.isEditor)) {
+      return res
+        .status(403)
+        .json({ success: false, message: "Insufficient permissions" });
+    }
+
+    await communityPostsCollection.updateOne(
+      { _id: postObjId },
+      { $set: { isPinned: !!pin } }
+    );
+
+    return res.json({ success: true, isPinned: !!pin });
+  } catch (error) {
+    console.error("POST /posts/:postId/pin error:", error);
     return res
       .status(500)
       .json({ success: false, message: "Internal server error" });
@@ -2379,6 +2453,7 @@ app.get("/exams/:examId", verifyTokenEarly, async (req, res) => {
       examId: ex._id,
       type: ex.type,
       passingScore: ex.passingScore,
+      timeLimitMinutes: ex.timeLimitMinutes || null,
       questions: Array.isArray(ex.questions)
         ? ex.questions.map((q) => ({
             question: q.question,
@@ -2453,7 +2528,7 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
         .status(404)
         .json({ success: false, message: "Exam not found" });
 
-    const { answers, audioUrl, proctoring } = req.body; // answers: [{questionIndex, answer}], audioUrl for listening, proctoring summary
+    const { answers, audioUrl, videoUrl, proctoring, identityNumber, startedAt } = req.body; // answers: [{questionIndex, answer}], audioUrl/videoUrl for listening/speaking, proctoring summary
 
     // If client indicates submission must be blocked due to proctoring
     if (proctoring && proctoring.blockedSubmission === true) {
@@ -2462,6 +2537,9 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
         message: "Submission blocked due to proctoring violations",
       });
     }
+
+    const startedAtDate = startedAt ? new Date(startedAt) : new Date();
+    const submittedAtDate = new Date();
 
     // Quiz type: auto-grade
     if (exam.type === "quiz") {
@@ -2492,6 +2570,9 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
         passed,
         graded: true,
         createdAt: new Date(),
+        startedAt: startedAtDate,
+        submittedAt: submittedAtDate,
+        identityNumber: identityNumber || null,
         proctoring: proctoring || null,
       };
       const attemptRes =
@@ -2519,6 +2600,9 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
         passed: null,
         graded: false, // Needs manual grading
         createdAt: new Date(),
+        startedAt: startedAtDate,
+        submittedAt: submittedAtDate,
+        identityNumber: identityNumber || null,
         proctoring: proctoring || null,
       };
       const attemptRes =
@@ -2541,11 +2625,15 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
         postId: exam.postId,
         type: exam.type,
         audioUrl, // Recorded audio URL
+        videoUrl, // Recorded video URL
         answers, // Optional text answers
         score: null,
         passed: null,
         graded: false, // Needs manual grading
         createdAt: new Date(),
+        startedAt: startedAtDate,
+        submittedAt: submittedAtDate,
+        identityNumber: identityNumber || null,
         proctoring: proctoring || null,
       };
       const attemptRes =
@@ -2566,6 +2654,359 @@ app.post("/exams/:examId/attempt", verifyTokenEarly, async (req, res) => {
     return res
       .status(500)
       .json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Generate PDF answer sheet for an attempt
+app.get("/exams/attempts/:attemptId/answer-sheet", verifyTokenEarly, async (req, res) => {
+  try {
+    const { attemptId } = req.params;
+    let attemptObjId;
+    try {
+      attemptObjId = new ObjectId(attemptId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid attempt id" });
+    }
+
+    const attempt = await communityExamAttemptsCollection.findOne({ _id: attemptObjId });
+    if (!attempt) {
+      return res.status(404).json({ success: false, message: "Attempt not found" });
+    }
+
+    const exam = await communityExamsCollection.findOne({ _id: attempt.examId });
+    if (!exam) {
+      return res.status(404).json({ success: false, message: "Exam not found" });
+    }
+
+    const student = await usersCollections.findOne({ _id: attempt.userId });
+    if (!student) {
+      return res.status(404).json({ success: false, message: "Student not found" });
+    }
+
+    // Generate beautiful PDF answer sheet
+    const doc = new PDFDocument({
+      size: "A4",
+      layout: "portrait",
+      margin: 40,
+    });
+    const chunks = [];
+    doc.on("data", (d) => chunks.push(d));
+    const done = new Promise((resolve) => doc.on("end", resolve));
+
+    // Page dimensions
+    const pageWidth = 595;
+    const pageHeight = 842;
+
+    // Header Title
+    doc.fontSize(22).fillColor("#1e40af").font("Helvetica-Bold").text("FLYBOOK LEARNING PLATFORM", { align: "center" });
+    doc.fontSize(14).fillColor("#4b5563").font("Helvetica-Bold").text("Exam Answer Sheet", { align: "center" });
+    doc.moveDown(1.5);
+
+    // Decorative line
+    doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).lineWidth(1).strokeColor("#e5e7eb").stroke();
+    doc.moveDown(1);
+
+    // Metadata grid (2 columns)
+    const startY = doc.y;
+    doc.fontSize(10).fillColor("#374151");
+    
+    // Column 1
+    doc.font("Helvetica-Bold").text("Student Info", 40, startY);
+    doc.font("Helvetica").text(`Name: ${student.name || "N/A"}`);
+    doc.text(`Phone: ${student.number || "N/A"}`);
+    doc.text(`Identity / Roll: ${attempt.identityNumber || student.number || "N/A"}`);
+    
+    // Column 2
+    doc.font("Helvetica-Bold").text("Exam Info", pageWidth / 2 + 20, startY);
+    doc.font("Helvetica").text(`Exam Type: ${attempt.type.toUpperCase()}`);
+    doc.text(`Graded Status: ${attempt.graded ? "GRADED" : "PENDING"}`);
+    doc.text(`Score: ${attempt.score !== null ? attempt.score + "%" : "N/A"}`);
+    doc.text(`Result: ${attempt.passed ? "PASSED" : attempt.passed === false ? "FAILED" : "N/A"}`);
+    if (attempt.startedAt) {
+      doc.text(`Started At: ${new Date(attempt.startedAt).toLocaleString()}`);
+    }
+    if (attempt.submittedAt) {
+      doc.text(`Submitted At: ${new Date(attempt.submittedAt).toLocaleString()}`);
+    }
+
+    if (attempt.audioUrl) {
+      doc.text("Audio Response: [Click to listen]", {
+        link: attempt.audioUrl,
+        underline: true
+      });
+    }
+    if (attempt.videoUrl) {
+      doc.text("Video Response: [Click to watch]", {
+        link: attempt.videoUrl,
+        underline: true
+      });
+    }
+
+    doc.moveDown(2);
+    // Decorative line
+    doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).lineWidth(1).strokeColor("#e5e7eb").stroke();
+    doc.moveDown(1.5);
+
+    // Questions and Answers
+    doc.fontSize(12).fillColor("#1e40af").font("Helvetica-Bold").text("QUESTIONS & ANSWERS", 40);
+    doc.moveDown(1);
+
+    const questions = exam.questions || [];
+    const answers = attempt.answers || [];
+
+    questions.forEach((q, index) => {
+      // Check if we need to add a new page (rough height check)
+      if (doc.y > pageHeight - 120) {
+        doc.addPage();
+        doc.fontSize(10).fillColor("#9ca3af").font("Helvetica").text("FlyBook Exam Answer Sheet (Continued)", 40, 30);
+        doc.moveTo(40, 45).lineTo(pageWidth - 40, 45).lineWidth(0.5).strokeColor("#e5e7eb").stroke();
+        doc.y = 60;
+      }
+
+      const cleanIndex = index + 1;
+      doc.fontSize(11).fillColor("#1f2937").font("Helvetica-Bold").text(`Q${cleanIndex}. ${q.question || ""}`, 40);
+      
+      if (q.options && q.options.length > 0) {
+        doc.fontSize(9).fillColor("#6b7280").font("Helvetica");
+        q.options.forEach((opt, optIndex) => {
+          doc.text(`   [${String.fromCharCode(65 + optIndex)}] ${opt}`);
+        });
+      }
+
+      // Student answer
+      const studentAnsObj = answers.find(a => a.questionIndex === index);
+      const studentAns = studentAnsObj ? studentAnsObj.answer : "No answer provided";
+      const ansType = studentAnsObj ? (studentAnsObj.type || "text") : "text";
+
+      doc.moveDown(0.5);
+      doc.fontSize(10).fillColor("#10b981").font("Helvetica-Bold").text("   Student Answer: ", { continued: true });
+      
+      if (ansType === "image" || ansType === "pdf") {
+        doc.fillColor("#2563eb").font("Helvetica-Oblique").text(`[Uploaded ${ansType.toUpperCase()} - Click to view]`, {
+          link: studentAns,
+          underline: true
+        });
+      } else {
+        doc.fillColor("#374151").font("Helvetica").text(studentAns);
+      }
+
+      // Correct answer / Grading feedback
+      if (attempt.type === "quiz" && q.answer) {
+        doc.fontSize(10).fillColor("#4b5563").font("Helvetica-Bold").text("   Correct Option: ", { continued: true });
+        doc.font("Helvetica").text(q.answer);
+      }
+
+      doc.moveDown(1.5);
+    });
+
+    // Signatures/Footer
+    if (doc.y > pageHeight - 80) {
+      doc.addPage();
+      doc.y = 60;
+    }
+    doc.moveDown(2);
+    doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).lineWidth(0.5).strokeColor("#d1d5db").stroke();
+    doc.moveDown(1);
+    doc.fontSize(8).fillColor("#9ca3af").font("Helvetica").text("Generated automatically by FlyBook App System", { align: "center" });
+
+    doc.end();
+    await done;
+    const pdfBuffer = Buffer.concat(chunks);
+
+    const fileName = `answersheet_${attempt._id}_${Date.now()}.pdf`;
+    const filePath = path.join(__dirname, "public", "pdfs", fileName);
+    fs.writeFileSync(filePath, pdfBuffer);
+    const pdfUrl = `${req.protocol}://${req.get("host")}/public/pdfs/${fileName}`;
+
+    return res.json({ success: true, pdfUrl });
+  } catch (error) {
+    console.error("GET answer-sheet error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// ─── Result Sheet: All students' results for a course as a PDF ───────────────
+app.get("/courses/:courseId/result-sheet", verifyTokenEarly, async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    let courseObjId;
+    try { courseObjId = new ObjectId(courseId); } catch {
+      return res.status(400).json({ success: false, message: "Invalid courseId" });
+    }
+
+    // Fetch course outline
+    const course = await communityCoursesCollection.findOne({ _id: courseObjId });
+    if (!course) return res.status(404).json({ success: false, message: "Course not found" });
+
+    // Authorization: course owner or admin
+    const post2 = await communityPostsCollection.findOne({ _id: course.postId }, { projection: { authorId: 1, communityId: 1 } });
+    if (!post2) return res.status(404).json({ success: false, message: "Post not found" });
+    const isOwner = post2.authorId?.toString() === req.user._id?.toString();
+    const role = await getCommunityRole(req.user._id, (post2.communityId || course.communityId).toString());
+    if (!isOwner && !role.isMainAdmin && !role.isAdmin) {
+      return res.status(403).json({ success: false, message: "Not authorized" });
+    }
+
+    // Fetch all students and their attempts for this course
+    const allAttempts = await communityExamAttemptsCollection.find({ courseId: courseObjId }).toArray();
+    const studentIds = [...new Set(allAttempts.map(a => a.userId?.toString()))];
+    const students = await usersCollections.find({ _id: { $in: studentIds.map(id => new ObjectId(id)) } }).toArray();
+    const studentMap = Object.fromEntries(students.map(s => [s._id.toString(), s]));
+
+    // Fetch all exams for this course
+    const exams = await communityExamsCollection.find({ courseId: courseObjId }).toArray();
+    const examMap = Object.fromEntries(exams.map(e => [e._id.toString(), e]));
+
+    // Group attempts by student
+    const studentAttempts = {};
+    allAttempts.forEach(att => {
+      const uid = att.userId?.toString();
+      if (!uid) return;
+      if (!studentAttempts[uid]) studentAttempts[uid] = [];
+      studentAttempts[uid].push(att);
+    });
+
+    // Build PDF
+    const PDFDocument = require("pdfkit");
+    const doc = new PDFDocument({ margin: 40, size: "A4" });
+    const chunks = [];
+    doc.on("data", chunk => chunks.push(chunk));
+    const done = new Promise(resolve => doc.on("end", resolve));
+
+    const pageWidth = 595;
+
+    // ── Cover Header ──
+    doc.fontSize(20).fillColor("#1e40af").font("Helvetica-Bold")
+       .text("FLYBOOK LEARNING PLATFORM", { align: "center" });
+    doc.fontSize(14).fillColor("#374151").font("Helvetica-Bold")
+       .text("Course Result Sheet", { align: "center" });
+    doc.moveDown(0.5);
+    doc.fontSize(11).fillColor("#6b7280").font("Helvetica")
+       .text(`Course: ${course.title || courseId}`, { align: "center" });
+    doc.text(`Generated: ${new Date().toLocaleString()}`, { align: "center" });
+    doc.moveDown(1);
+    doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).lineWidth(1.5).strokeColor("#1e40af").stroke();
+    doc.moveDown(1);
+
+    // ── Summary Stats ──
+    const totalStudents = studentIds.length;
+    const gradedAttempts = allAttempts.filter(a => a.graded === true);
+    const passedAttempts = gradedAttempts.filter(a => a.passed === true);
+    const passRate = gradedAttempts.length > 0 ? Math.round((passedAttempts.length / gradedAttempts.length) * 100) : 0;
+    const avgScore = gradedAttempts.length > 0
+      ? Math.round(gradedAttempts.reduce((s, a) => s + (a.score || 0), 0) / gradedAttempts.length)
+      : 0;
+
+    doc.fontSize(11).fillColor("#374151").font("Helvetica-Bold").text("Summary Statistics", 40);
+    doc.font("Helvetica").fontSize(10);
+    doc.text(`Total Enrolled Students: ${totalStudents}   |   Total Attempts: ${allAttempts.length}   |   Pass Rate: ${passRate}%   |   Average Score: ${avgScore}%`);
+    doc.moveDown(1.5);
+
+    // ── Per-Student Results ──
+    let serialNo = 1;
+    for (const uid of studentIds) {
+      const student = studentMap[uid];
+      if (!student) continue;
+      const atts = studentAttempts[uid] || [];
+
+      // Header row
+      if (doc.y > 720) { doc.addPage(); }
+      doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).lineWidth(0.5).strokeColor("#e5e7eb").stroke();
+      doc.moveDown(0.5);
+
+      const studentName2 = student.name || "Unknown";
+      const studentNumber = student.number || "";
+      const idNumber = atts[0]?.identityNumber || "";
+
+      doc.fontSize(11).fillColor("#1f2937").font("Helvetica-Bold")
+         .text(`${serialNo}. ${studentName2}`, 40, doc.y, { continued: true });
+      doc.fillColor("#6b7280").font("Helvetica").fontSize(10)
+         .text(`   ${studentNumber}${idNumber ? " | ID: " + idNumber : ""}`);
+
+      // Attempt rows
+      doc.fontSize(9).fillColor("#374151").font("Helvetica");
+      atts.forEach((att, i) => {
+        if (doc.y > 760) { doc.addPage(); }
+        const exam2 = examMap[att.examId?.toString()];
+        const examName = exam2 ? (exam2.title || `Exam`) : "Exam";
+        const examType2 = att.type?.toUpperCase() || "EXAM";
+        const scoreStr = att.graded ? `${att.score}%` : "Pending";
+        const result = att.graded ? (att.passed ? "PASSED" : "FAILED") : "UNGRADED";
+        const resultColor = att.graded ? (att.passed ? "#059669" : "#dc2626") : "#b45309";
+
+        doc.fillColor("#374151").text(
+          `   [${examType2}] ${examName}   Score: ${scoreStr}`,
+          50, doc.y, { continued: true }
+        );
+        doc.fillColor(resultColor).font("Helvetica-Bold").text(`   ${result}`);
+        doc.font("Helvetica").fillColor("#374151");
+        if (att.feedback) {
+          doc.fontSize(8).fillColor("#6b7280").text(`   Feedback: ${att.feedback}`, 50);
+        }
+      });
+
+      if (atts.length === 0) {
+        doc.fontSize(9).fillColor("#9ca3af").text("   No exams attempted yet", 50);
+      }
+
+      doc.moveDown(0.8);
+      serialNo++;
+    }
+
+    // ── Footer ──
+    if (doc.y > 780) doc.addPage();
+    doc.moveDown(2);
+    doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).lineWidth(0.5).strokeColor("#d1d5db").stroke();
+    doc.moveDown(0.5);
+    doc.fontSize(8).fillColor("#9ca3af").font("Helvetica")
+       .text("Generated automatically by FlyBook App System — Confidential", { align: "center" });
+
+    doc.end();
+    await done;
+    const pdfBuffer = Buffer.concat(chunks);
+
+    const fileName = `result_sheet_${courseId}_${Date.now()}.pdf`;
+    const filePath = path.join(__dirname, "public", "pdfs", fileName);
+    fs.writeFileSync(filePath, pdfBuffer);
+    const pdfUrl = `${req.protocol}://${req.get("host")}/public/pdfs/${fileName}`;
+
+    return res.json({ success: true, pdfUrl });
+  } catch (error) {
+    console.error("GET result-sheet error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
+// Get a single exam attempt (for grading or viewing)
+app.get("/exams/attempts/:attemptId", verifyTokenEarly, async (req, res) => {
+  try {
+    const { attemptId } = req.params;
+    let attemptObjId;
+    try {
+      attemptObjId = new ObjectId(attemptId);
+    } catch {
+      return res.status(400).json({ success: false, message: "Invalid attempt id" });
+    }
+
+    const attempt = await communityExamAttemptsCollection.findOne({ _id: attemptObjId });
+    if (!attempt) {
+      return res.status(404).json({ success: false, message: "Attempt not found" });
+    }
+
+    const exam = await communityExamsCollection.findOne({ _id: attempt.examId });
+    if (!exam) {
+      return res.status(404).json({ success: false, message: "Exam not found" });
+    }
+
+    const student = await usersCollections.findOne(
+      { _id: attempt.userId },
+      { projection: { name: 1, number: 1, email: 1, profilePicture: 1 } }
+    );
+
+    return res.json({ success: true, data: { ...attempt, exam, student } });
+  } catch (error) {
+    console.error("GET /exams/attempts/:attemptId error:", error);
+    return res.status(500).json({ success: false, message: "Internal server error" });
   }
 });
 
@@ -3240,10 +3681,62 @@ const verifyToken = async (req, res, next) => {
 
 app.post("/api/translate", async (req, res) => {
   const { text, targetLang } = req.body;
+  console.log(targetLang);
 
+  let lang = targetLang;
   try {
-    const { text: translatedText } = await translate(text, { to: targetLang });
-    console.log(targetLang);
+    if (lang.includes("_")) lang = lang.split("_")[0];
+    if (lang.includes("-")) lang = lang.split("-")[0];
+    lang = lang.toLowerCase();
+
+    // Map common 3-letter codes to 2-letter codes
+    const threeToTwo = {
+      ben: "bn",
+      eng: "en",
+      hin: "hi",
+      urd: "ur",
+      nep: "ne",
+      sin: "si",
+      msa: "ms",
+      ind: "id",
+      tha: "th",
+      vie: "vi",
+      mya: "my",
+      zho: "zh",
+      jpn: "ja",
+      kor: "ko",
+      ara: "ar",
+      fas: "fa",
+      tur: "tr",
+      fra: "fr",
+      spa: "es",
+      deu: "de",
+      ita: "it",
+      por: "pt",
+      nld: "nl",
+      swe: "sv",
+      nor: "no",
+      dan: "da",
+      fin: "fi",
+      rus: "ru",
+      ukr: "uk",
+      pol: "pl",
+      ces: "cs",
+      hun: "hu",
+      ron: "ro",
+      ell: "el",
+      afr: "af",
+      yor: "yo",
+      amh: "am",
+    };
+    if (threeToTwo[lang]) {
+      lang = threeToTwo[lang];
+    } else if (lang.length > 2) {
+      lang = lang.slice(0, 2);
+    }
+
+    const { text: translatedText } = await translate(text, { to: lang });
+    console.log("Translated to:", lang);
     res.json({ translation: translatedText });
   } catch (error) {
     console.error("Translation Error:", error);
@@ -3264,18 +3757,34 @@ app.get("/search", async (req, res) => {
     if (token) {
       try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        currentUser = await usersCollections.findOne({ number: decoded.number });
+        currentUser = await usersCollections.findOne({
+          number: decoded.number,
+        });
         if (currentUser) {
           const blockedIds = currentUser.blockedUsers || [];
-          const whoBlockedMe = await usersCollections.find({ 
-            blockedUsers: { $in: [currentUser._id, currentUser._id.toString()] } 
-          }).project({ _id: 1 }).toArray();
-          
-          const allBlocked = [...blockedIds, ...whoBlockedMe.map(u => u._id)];
-          const combinedExcluded = allBlocked.map(id => {
-            try { return new ObjectId(id); } catch(e) { return id; }
+          const whoBlockedMe = await usersCollections
+            .find({
+              blockedUsers: {
+                $in: [currentUser._id, currentUser._id.toString()],
+              },
+            })
+            .project({ _id: 1 })
+            .toArray();
+
+          const allBlocked = [...blockedIds, ...whoBlockedMe.map((u) => u._id)];
+          const combinedExcluded = allBlocked.map((id) => {
+            try {
+              return new ObjectId(id);
+            } catch (e) {
+              return id;
+            }
           });
-          allExcludedIds = [...new Set([...combinedExcluded, ...combinedExcluded.map(id => id.toString())])];
+          allExcludedIds = [
+            ...new Set([
+              ...combinedExcluded,
+              ...combinedExcluded.map((id) => id.toString()),
+            ]),
+          ];
         }
       } catch (e) {
         console.error("Search auth error:", e.message);
@@ -3331,22 +3840,26 @@ app.get("/search", async (req, res) => {
       const userSearchQuery = {
         $and: [
           { $or: [{ name: regex }, { userName: regex }] },
-          { _id: { $nin: allExcludedIds.map(id => ObjectId.isValid(id) ? new ObjectId(id) : id) } }
-        ]
+          {
+            _id: {
+              $nin: allExcludedIds.map((id) =>
+                ObjectId.isValid(id) ? new ObjectId(id) : id,
+              ),
+            },
+          },
+        ],
       };
 
       const users = await usersCollections
-        .find(userSearchQuery,
-          {
-            projection: {
-              name: 1,
-              email: 1,
-              number: 1,
-              profileImage: 1,
-              userName: 1,
-            },
+        .find(userSearchQuery, {
+          projection: {
+            name: 1,
+            email: 1,
+            number: 1,
+            profileImage: 1,
+            userName: 1,
           },
-        )
+        })
         .toArray();
       websiteResults.users = users || [];
     } catch (error) {
@@ -3357,18 +3870,15 @@ app.get("/search", async (req, res) => {
     try {
       const opinionSearchQuery = {
         $and: [
-          { $or: [
-            { $text: { $search: searchQuery } },
-            { userName: regex }
-          ]},
-          { userId: { $nin: allExcludedIds } }
-        ]
+          { $or: [{ $text: { $search: searchQuery } }, { userName: regex }] },
+          { userId: { $nin: allExcludedIds } },
+        ],
       };
-      
+
       const results = await opinionCollections
         .find(opinionSearchQuery)
         .toArray();
-      
+
       websiteResults.opinions = results;
     } catch (error) {
       console.error("Error fetching opinions:", error);
@@ -3485,35 +3995,39 @@ app.post("/users/send-otp", async (req, res) => {
     );
 
     // Send OTP email via SendGrid HTTP API (no SMTP - bypasses Render port blocking)
-    await sendEmail({
-      to: email,
-      subject: "Your FlyBook Verification Code",
-      fromName: "FlyBook",
-      html: `<!DOCTYPE html><html><head><style>
-        body{font-family:Arial,sans-serif;line-height:1.6;color:#333}
-        .container{max-width:600px;margin:0 auto;padding:20px}
-        .header{background:linear-gradient(135deg,#3B82F6 0%,#2563EB 100%);color:white;padding:30px;text-align:center;border-radius:10px 10px 0 0}
-        .otp-box{background:#f3f4f6;border:2px dashed #3B82F6;border-radius:10px;padding:20px;text-align:center;margin:30px 0}
-        .otp-code{font-size:36px;font-weight:bold;color:#3B82F6;letter-spacing:8px;font-family:monospace}
-        .footer{background:#f9fafb;padding:20px;text-align:center;font-size:12px;color:#6b7280;border-radius:0 0 10px 10px}
-      </style></head><body><div class="container">
-        <div class="header"><div style="font-size:28px;font-weight:bold">📚 FlyBook</div><p style="margin:0;font-size:16px">Your Social Learning Platform</p></div>
-        <div style="background:#fff;padding:40px 30px;border:1px solid #e5e7eb">
-          <h2 style="color:#1f2937;margin-top:0">Verify Your Email Address</h2>
-          <p>Hi there! 👋 Thank you for signing up for FlyBook! Please verify your email address using the code below:</p>
-          <div class="otp-box"><p style="margin:0 0 10px 0;font-size:14px;color:#6b7280">Your Verification Code</p><div class="otp-code">${otp}</div></div>
-          <p><strong>This code expires in 10 minutes.</strong> Don't share it with anyone.</p>
-          <p style="color:#ef4444;font-size:14px">⚠️ This is an automated email. Please do not reply.</p>
-        </div>
-        <div class="footer"><p>© 2026 FlyBook - Your Social Learning Platform</p><p>This email was sent to ${email}</p></div>
-      </div></body></html>`,
-    });
-
-    console.log(`✅ OTP sent to ${email}: ${otp}`);
+    try {
+      await sendEmail({
+        to: email,
+        subject: "Your FlyBook Verification Code",
+        fromName: "FlyBook",
+        html: `<!DOCTYPE html><html><head><style>
+          body{font-family:Arial,sans-serif;line-height:1.6;color:#333}
+          .container{max-width:600px;margin:0 auto;padding:20px}
+          .header{background:linear-gradient(135deg,#3B82F6 0%,#2563EB 100%);color:white;padding:30px;text-align:center;border-radius:10px 10px 0 0}
+          .otp-box{background:#f3f4f6;border:2px dashed #3B82F6;border-radius:10px;padding:20px;text-align:center;margin:30px 0}
+          .otp-code{font-size:36px;font-weight:bold;color:#3B82F6;letter-spacing:8px;font-family:monospace}
+          .footer{background:#f9fafb;padding:20px;text-align:center;font-size:12px;color:#6b7280;border-radius:0 0 10px 10px}
+        </style></head><body><div class="container">
+          <div class="header"><div style="font-size:28px;font-weight:bold">📚 FlyBook</div><p style="margin:0;font-size:16px">Your Social Learning Platform</p></div>
+          <div style="background:#fff;padding:40px 30px;border:1px solid #e5e7eb">
+            <h2 style="color:#1f2937;margin-top:0">Verify Your Email Address</h2>
+            <p>Hi there! 👋 Thank you for signing up for FlyBook! Please verify your email address using the code below:</p>
+            <div class="otp-box"><p style="margin:0 0 10px 0;font-size:14px;color:#6b7280">Your Verification Code</p><div class="otp-code">${otp}</div></div>
+            <p><strong>This code expires in 10 minutes.</strong> Don't share it with anyone.</p>
+            <p style="color:#ef4444;font-size:14px">⚠️ This is an automated email. Please do not reply.</p>
+          </div>
+          <div class="footer"><p>© 2026 FlyBook - Your Social Learning Platform</p><p>This email was sent to ${email}</p></div>
+        </div></body></html>`,
+      });
+      console.log(`✅ OTP sent to ${email}: ${otp}`);
+    } catch (emailError) {
+      console.error(`⚠️ SendGrid failed: ${emailError.message}. Using console fallback.`);
+      console.log(`\n🔑🔑🔑 [DEVELOPMENT FALLBACK] OTP code for ${email} is: ${otp} 🔑🔑🔑\n`);
+    }
 
     res.status(200).json({
       success: true,
-      message: "Verification code sent to your email",
+      message: "Verification code sent (check email or server console)",
     });
   } catch (error) {
     console.error("❌ ERROR SENDING OTP:", error.message || error);
@@ -3599,6 +4113,7 @@ app.post("/users/register", async (req, res) => {
     // Check if email was verified via OTP (optional check - can be enabled for security)
     // Uncomment below to enforce email verification
 
+    /*
     if (email) {
       const otpRecord = await otpCollections.findOne({
         email: email.toLowerCase().trim(),
@@ -3612,6 +4127,7 @@ app.post("/users/register", async (req, res) => {
         });
       }
     }
+    */
 
     // Check if user already exists (supporting multi-format for search)
     let checkQuery = { number: number };
@@ -3787,9 +4303,10 @@ app.post("/users/login", async (req, res) => {
   console.log("Login attempt:", number || email, password);
   // Input validation
   if ((!number && !email) || !password) {
-    return res
-      .status(400)
-      .json({ success: false, message: "Identifier (number or email) and password are required" });
+    return res.status(400).json({
+      success: false,
+      message: "Identifier (number or email) and password are required",
+    });
   }
 
   try {
@@ -4316,13 +4833,19 @@ app.get("/api/user-profile/:userId", async (req, res) => {
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const currentUser = await usersCollections.findOne({ number: decoded.number });
-    
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
+
     if (currentUser) {
       const isBlockedByMe = currentUser.blockedUsers?.includes(userId);
-      const targetUser = await usersCollections.findOne({ _id: new ObjectId(userId) });
-      const amIBlockedByThem = targetUser?.blockedUsers?.includes(currentUser._id.toString());
-      
+      const targetUser = await usersCollections.findOne({
+        _id: new ObjectId(userId),
+      });
+      const amIBlockedByThem = targetUser?.blockedUsers?.includes(
+        currentUser._id.toString(),
+      );
+
       if (isBlockedByMe || amIBlockedByThem) {
         return res.status(404).json({ error: "User not found or blocked" });
       }
@@ -4660,20 +5183,25 @@ app.post("/api/user/forgot-password-otp", async (req, res) => {
       { upsert: true },
     );
 
-    await sendEmail({
-      to: email,
-      subject: "Password Reset Code - FlyBook",
-      fromName: "FlyBook Security",
-      html: `<div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;padding:20px;border:1px solid #eee;border-radius:10px">
-        <h2 style="color:#3B82F6;text-align:center">FlyBook Security</h2>
-        <p>We received a request to reset your password. Use the code below to proceed:</p>
-        <div style="background:#f4f7ff;padding:20px;text-align:center;border-radius:8px;margin:20px 0">
-          <span style="font-size:32px;font-weight:bold;letter-spacing:5px;color:#1e40af">${otp}</span>
-        </div>
-        <p style="font-size:13px;color:#666">This code will expire in 10 minutes. If you didn't request this, please ignore this email.</p>
-      </div>`,
-    });
-    res.json({ success: true, message: "Reset code sent to your email" });
+    try {
+      await sendEmail({
+        to: email,
+        subject: "Password Reset Code - FlyBook",
+        fromName: "FlyBook Security",
+        html: `<div style="font-family:Arial,sans-serif;max-width:500px;margin:auto;padding:20px;border:1px solid #eee;border-radius:10px">
+          <h2 style="color:#3B82F6;text-align:center">FlyBook Security</h2>
+          <p>We received a request to reset your password. Use the code below to proceed:</p>
+          <div style="background:#f4f7ff;padding:20px;text-align:center;border-radius:8px;margin:20px 0">
+            <span style="font-size:32px;font-weight:bold;letter-spacing:5px;color:#1e40af">${otp}</span>
+          </div>
+          <p style="font-size:13px;color:#666">This code will expire in 10 minutes. If you didn't request this, please ignore this email.</p>
+        </div>`,
+      });
+    } catch (emailError) {
+      console.error(`⚠️ SendGrid failed: ${emailError.message}. Using console fallback.`);
+      console.log(`\n🔑🔑🔑 [DEVELOPMENT FALLBACK] Reset code for ${email} is: ${otp} 🔑🔑🔑\n`);
+    }
+    res.json({ success: true, message: "Reset code sent to your email (check server console)" });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -5601,44 +6129,46 @@ app.post("/api/user/block", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
     if (!currentUser) return res.status(404).json({ error: "User not found" });
 
     // 1. Add to blockedUsers list
     await usersCollections.updateOne(
       { _id: currentUser._id },
-      { $addToSet: { blockedUsers: userId } }
+      { $addToSet: { blockedUsers: userId } },
     );
 
     // 2. Perform mutual friendship cleanup
     // Remove from each other's friends list
     await usersCollections.updateOne(
       { _id: currentUser._id },
-      { $pull: { friends: userId } }
+      { $pull: { friends: userId } },
     );
     await usersCollections.updateOne(
       { _id: new ObjectId(userId) },
-      { $pull: { friends: currentUser._id.toString() } }
+      { $pull: { friends: currentUser._id.toString() } },
     );
 
     // 3. Remove any pending friend requests from arrays
     await usersCollections.updateOne(
       { _id: currentUser._id },
-      { 
-        $pull: { 
+      {
+        $pull: {
           friendRequestsSent: userId,
-          friendRequestsReceived: userId 
-        } 
-      }
+          friendRequestsReceived: userId,
+        },
+      },
     );
     await usersCollections.updateOne(
       { _id: new ObjectId(userId) },
-      { 
-        $pull: { 
+      {
+        $pull: {
           friendRequestsSent: currentUser._id.toString(),
-          friendRequestsReceived: currentUser._id.toString() 
-        } 
-      }
+          friendRequestsReceived: currentUser._id.toString(),
+        },
+      },
     );
 
     res.json({ success: true, message: "User blocked successfully" });
@@ -5658,12 +6188,14 @@ app.post("/api/user/unblock", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
     if (!currentUser) return res.status(404).json({ error: "User not found" });
 
     await usersCollections.updateOne(
       { _id: currentUser._id },
-      { $pull: { blockedUsers: userId } }
+      { $pull: { blockedUsers: userId } },
     );
 
     res.json({ success: true, message: "User unblocked successfully" });
@@ -5681,13 +6213,18 @@ app.get("/api/user/blocked-list", async (req, res) => {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
     if (!currentUser) return res.status(404).json({ error: "User not found" });
 
     const blockedIds = currentUser.blockedUsers || [];
-    const blockedUsers = await usersCollections.find({
-      _id: { $in: blockedIds.map(id => new ObjectId(id)) }
-    }).project({ name: 1, userName: 1, profileImage: 1 }).toArray();
+    const blockedUsers = await usersCollections
+      .find({
+        _id: { $in: blockedIds.map((id) => new ObjectId(id)) },
+      })
+      .project({ name: 1, userName: 1, profileImage: 1 })
+      .toArray();
 
     res.json({ success: true, data: blockedUsers });
   } catch (error) {
@@ -5700,20 +6237,23 @@ app.get("/api/user/blocked-list", async (req, res) => {
 // peoples api - Only return users excluding the logged-in user
 app.get("/peoples", async (req, res) => {
   const token = req.headers.authorization?.split(" ")[1];
-
+  console.log("peoples token : ", token);
   if (!token) {
-    console.log("no token");
     return res.status(401).json({ error: "Access denied. No token provided." });
   }
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
     if (!currentUser) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    const blockedByCurrent = (currentUser.blockedUsers || []).map(id => id.toString());
+    const blockedByCurrent = (currentUser.blockedUsers || [])
+      .filter((id) => id !== null && id !== undefined)
+      .map((id) => id.toString());
     const usersWhoBlockedMe = await usersCollections
       .find({
         blockedUsers: { $in: [currentUser._id, currentUser._id.toString()] },
@@ -5721,8 +6261,12 @@ app.get("/peoples", async (req, res) => {
       .toArray();
     const blockedMeIds = usersWhoBlockedMe.map((u) => u._id.toString());
 
+    const friends = (currentUser.friends || [])
+      .filter((id) => id !== null && id !== undefined)
+      .map((id) => id.toString());
+
     const allExcludedIds = [
-      ...new Set([...blockedByCurrent, ...blockedMeIds]),
+      ...new Set([...blockedByCurrent, ...blockedMeIds, ...friends]),
     ].map((id) => new ObjectId(id));
 
     // Exclude the logged-in user, blocked users, and users who have blocked the current user
@@ -5748,7 +6292,14 @@ app.get("/peoples", async (req, res) => {
     res.send(result);
   } catch (error) {
     console.error("Error fetching peoples:", error);
-    res.status(401).json({ error: "Invalid or expired token." });
+    if (
+      error.name === "JsonWebTokenError" ||
+      error.name === "TokenExpiredError"
+    ) {
+      res.status(401).json({ error: "Invalid or expired token." });
+    } else {
+      res.status(500).json({ error: "Internal server error." });
+    }
   }
 });
 app.get("/thesis", async (req, res) => {
@@ -5838,9 +6389,22 @@ app.get("/friend-request/received", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
 
+    const receivedIds = user.friendRequestsReceived || [];
+    if (receivedIds.length === 0) {
+      return res.json([]);
+    }
+
+    const objectIds = receivedIds.map((id) => {
+      try {
+        return new ObjectId(id);
+      } catch (e) {
+        return id;
+      }
+    });
+
     // Populate friend request details
     const friendRequests = await usersCollections
-      .find({ _id: { $in: user.friendRequestsReceived || [] } })
+      .find({ _id: { $in: objectIds } })
       .project({
         name: 1,
         profileImage: 1,
@@ -5854,6 +6418,14 @@ app.get("/friend-request/received", async (req, res) => {
         friendRequestsSent: 1,
       })
       .toArray();
+
+    // Sort to match the order of friendRequestsReceived, reversed (newest first)
+    const stringIds = receivedIds.map((id) => id.toString());
+    friendRequests.sort((a, b) => {
+      const indexA = stringIds.indexOf(a._id.toString());
+      const indexB = stringIds.indexOf(b._id.toString());
+      return indexB - indexA;
+    });
 
     res.json(friendRequests);
   } catch (error) {
@@ -6019,9 +6591,22 @@ app.get("/friend-request/sended", async (req, res) => {
       return res.status(404).json({ error: "User not found." });
     }
 
+    const sentIds = user.friendRequestsSent || [];
+    if (sentIds.length === 0) {
+      return res.json([]);
+    }
+
+    const objectIds = sentIds.map((id) => {
+      try {
+        return new ObjectId(id);
+      } catch (e) {
+        return id;
+      }
+    });
+
     // Populate friend request details
     const friendRequests = await usersCollections
-      .find({ _id: { $in: user.friendRequestsSent || [] } })
+      .find({ _id: { $in: objectIds } })
       .project({
         name: 1,
         profileImage: 1,
@@ -6035,6 +6620,14 @@ app.get("/friend-request/sended", async (req, res) => {
         friendRequestsSent: 1,
       })
       .toArray();
+
+    // Sort to match the order of friendRequestsSent, reversed (newest first)
+    const stringIds = sentIds.map((id) => id.toString());
+    friendRequests.sort((a, b) => {
+      const indexA = stringIds.indexOf(a._id.toString());
+      const indexB = stringIds.indexOf(b._id.toString());
+      return indexB - indexA;
+    });
 
     res.json(friendRequests);
   } catch (error) {
@@ -6143,9 +6736,9 @@ app.get("/api/user-friends/:userId", async (req, res) => {
       return res.json({ success: true, data: [], userName: user.name });
     }
 
-    const blockedByCurrent = (currentUser.blockedUsers || []).map((id) =>
-      id.toString(),
-    );
+    const blockedByCurrent = (currentUser.blockedUsers || [])
+      .filter((id) => id !== null && id !== undefined)
+      .map((id) => id.toString());
     const usersWhoBlockedMe = await usersCollections
       .find({
         blockedUsers: { $in: [currentUser._id, currentUser._id.toString()] },
@@ -6367,21 +6960,29 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
     }
 
     const decoded = jwt.verify(token, JWT_SECRET);
-    const currentUser = await usersCollections.findOne({ number: decoded.number });
+    const currentUser = await usersCollections.findOne({
+      number: decoded.number,
+    });
     const blockedIds = currentUser?.blockedUsers || [];
-    const whoBlockedMe = await usersCollections.find({ blockedUsers: currentUser._id }).project({ _id: 1 }).toArray();
-    const allExcludedIds = [...blockedIds, ...whoBlockedMe.map(u => u._id)].map(id => new ObjectId(id));
+    const whoBlockedMe = await usersCollections
+      .find({ blockedUsers: currentUser._id })
+      .project({ _id: 1 })
+      .toArray();
+    const allExcludedIds = [
+      ...blockedIds,
+      ...whoBlockedMe.map((u) => u._id),
+    ].map((id) => new ObjectId(id));
 
     const { userId } = req.query;
     const excludedIds = allExcludedIds;
-    const excludedIdStrings = allExcludedIds.map(id => id.toString());
+    const excludedIdStrings = allExcludedIds.map((id) => id.toString());
     const combinedExcluded = [...excludedIds, ...excludedIdStrings];
 
     let query = {};
 
     if (userId && userId !== "undefined" && userId !== "null") {
       // If specific userId is requested, check if it's blocked
-      if (allExcludedIds.some(id => id.toString() === userId.toString())) {
+      if (allExcludedIds.some((id) => id.toString() === userId.toString())) {
         return res.json({ success: true, data: [], hasMore: false, page });
       }
 
@@ -6394,10 +6995,7 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
         };
       } else {
         query = {
-          $and: [
-            { userId: { $nin: combinedExcluded } },
-            { userId: userId },
-          ],
+          $and: [{ userId: { $nin: combinedExcluded } }, { userId: userId }],
         };
       }
     } else {
@@ -6426,6 +7024,8 @@ app.get("/api/opinion/fast-posts", async (req, res) => {
           createdAt: 1,
           privacy: 1,
           images: 1,
+          channelId: 1,
+          channelName: 1,
         },
       })
       .sort({ createdAt: -1 }) // Users requested latest posts first
@@ -8079,7 +8679,9 @@ app.get("/api/home/fast-posts", async (req, res) => {
   try {
     await connectToMongo();
     if (!adminPostCollections || !usersCollections) {
-      return res.status(500).json({ error: "Database collections not initialized" });
+      return res
+        .status(500)
+        .json({ error: "Database collections not initialized" });
     }
 
     const token = req.headers.authorization?.split(" ")[1];
@@ -8087,16 +8689,33 @@ app.get("/api/home/fast-posts", async (req, res) => {
     if (token) {
       try {
         const decoded = jwt.verify(token, JWT_SECRET);
-        const currentUser = await usersCollections.findOne({ number: decoded.number });
+        const currentUser = await usersCollections.findOne({
+          number: decoded.number,
+        });
         if (currentUser) {
           const blockedIds = currentUser.blockedUsers || [];
-          const whoBlockedMe = await usersCollections.find({ blockedUsers: currentUser._id }).project({ _id: 1 }).toArray();
-          const allExcluded = [...blockedIds, ...whoBlockedMe.map(u => u._id)].map(id => {
-            try { return new ObjectId(id); } catch(e) { return id; }
+          const whoBlockedMe = await usersCollections
+            .find({ blockedUsers: currentUser._id })
+            .project({ _id: 1 })
+            .toArray();
+          const allExcluded = [
+            ...blockedIds,
+            ...whoBlockedMe.map((u) => u._id),
+          ].map((id) => {
+            try {
+              return new ObjectId(id);
+            } catch (e) {
+              return id;
+            }
           });
-          excludedIds = [...allExcluded, ...allExcluded.map(id => id.toString())];
+          excludedIds = [
+            ...allExcluded,
+            ...allExcluded.map((id) => id.toString()),
+          ];
         }
-      } catch (e) { /* ignore token errors for public feed but ideally it should be valid */ }
+      } catch (e) {
+        /* ignore token errors for public feed but ideally it should be valid */
+      }
     }
 
     let query = {};
@@ -9390,19 +10009,9 @@ app.delete("/notes/:noteId", async (req, res) => {
 });
 
 // Add organization endpoint
-app.post("/add-organizations", async (req, res) => {
-  const token = req.headers.authorization?.split(" ")[1];
-  if (!token) {
-    return res.status(401).json({ error: "Access denied. No token provided." });
-  }
+app.post("/add-organizations", verifyTokenEarly, async (req, res) => {
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const user = await usersCollections.findOne({ number: decoded.number });
-    if (!user) {
-      return res.status(403).json({
-        error: "Unauthorized access. Only admins can add organizations.",
-      });
-    }
+    const user = req.user;
     const {
       orgName,
       email,
@@ -9419,8 +10028,7 @@ app.post("/add-organizations", async (req, res) => {
       !email ||
       !phone ||
       !address ||
-      !description ||
-      !profileImage
+      !description
     ) {
       return res.status(400).json({
         success: false,
@@ -9444,7 +10052,7 @@ app.post("/add-organizations", async (req, res) => {
       website,
       address,
       description,
-      profileImage,
+      profileImage: profileImage || "https://images.unsplash.com/photo-1522071820081-009f0129c71c?auto=format&fit=crop&w=300&q=80",
       status: "pending",
       postDate,
       postTime,
@@ -9603,13 +10211,6 @@ app.get("/api/v1/organizations/user/:userId", async (req, res) => {
     const organizations = await organizationCollections
       .find({ postBy: new ObjectId(userId) })
       .toArray();
-
-    if (!organizations.length) {
-      return res.status(404).json({
-        success: false,
-        message: "No organizations found for this user",
-      });
-    }
 
     res.status(200).json({
       success: true,
@@ -9849,6 +10450,7 @@ app.post("/api/v1/activities", async (req, res) => {
       userName: user.name,
       userId: userId,
       userImage: user.profileImage,
+      eventTransferStatus: "idle", // idle → pending (when org requests) → approved/rejected (by admin)
       createdAt: new Date(),
     };
 
@@ -9960,10 +10562,61 @@ app.get("/organizations/activities", async (req, res) => {
       )
       .toArray();
 
+    const processedOrganizations = [];
+    for (const org of organizations) {
+      if (org.activities && Array.isArray(org.activities)) {
+        const approvedActivities = org.activities.filter(
+          (act) => act.eventTransferStatus === "approved"
+        );
+        processedOrganizations.push({
+          ...org,
+          activities: approvedActivities,
+        });
+      } else {
+        processedOrganizations.push({
+          ...org,
+          activities: [],
+        });
+      }
+    }
+
+    // Fetch approved transferred community posts to append them as organization activities/events
+    const approvedPosts = await communityPostsCollection
+      .find({ eventTransferStatus: "approved" })
+      .toArray();
+
+    for (const post of approvedPosts) {
+      let commIdObj;
+      try {
+        commIdObj = typeof post.communityId === "string" ? new ObjectId(post.communityId) : post.communityId;
+      } catch {
+        commIdObj = post.communityId;
+      }
+      const community = commIdObj ? await communityCollection.findOne({ _id: commIdObj }) : null;
+      
+      const pseudoOrg = {
+        _id: post.communityId,
+        orgName: community?.name || "Community Event",
+        profileImage: community?.logo || "https://via.placeholder.com/40x40",
+        activities: [
+          {
+            _id: post._id,
+            title: post.title,
+            details: post.description || post.content || "",
+            date: post.createdAt ? new Date(post.createdAt).toLocaleDateString() : new Date().toLocaleDateString(),
+            place: "TBD",
+            image: post.media?.[0]?.url || post.media?.[0] || "",
+            createdAt: post.createdAt || new Date(),
+          }
+        ]
+      };
+      processedOrganizations.push(pseudoOrg);
+    }
+
     res.status(200).json({
       success: true,
       message: "Organizations retrieved successfully",
-      data: organizations,
+      data: processedOrganizations,
     });
   } catch (error) {
     console.error("Error retrieving organizations:", error);
@@ -9971,6 +10624,127 @@ app.get("/organizations/activities", async (req, res) => {
       success: false,
       message: "An error occurred while retrieving organizations",
     });
+  }
+});
+
+// Request event transfer for an activity
+app.patch("/api/v1/activities/:activityId/transfer-request", verifyTokenEarly, async (req, res) => {
+  const { activityId } = req.params;
+  const { orgId } = req.body;
+  if (!orgId) {
+    return res.status(400).json({ success: false, message: "orgId is required" });
+  }
+  try {
+    const result = await organizationCollections.updateOne(
+      { _id: new ObjectId(orgId), "activities._id": new ObjectId(activityId) },
+      { $set: { "activities.$.eventTransferStatus": "pending" } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Organization or activity not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Event transfer request submitted successfully and is pending admin approval.",
+    });
+  } catch (error) {
+    console.error("Error requesting event transfer:", error);
+    res.status(500).json({ success: false, message: "Failed to submit event transfer request" });
+  }
+});
+
+// Admin: Get all pending event transfer requests
+app.get("/api/v1/admin/pending-event-transfers", verifyTokenEarly, async (req, res) => {
+  try {
+    const user = req.user;
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Forbidden. Admin only." });
+    }
+
+    const organizations = await organizationCollections
+      .find({ "activities.eventTransferStatus": "pending" })
+      .toArray();
+
+    const pendingTransfers = [];
+    for (const org of organizations) {
+      if (org.activities && Array.isArray(org.activities)) {
+        for (const act of org.activities) {
+          if (act.eventTransferStatus === "pending") {
+            pendingTransfers.push({
+              ...act,
+              orgId: org._id,
+              orgName: org.orgName,
+              orgImage: org.profileImage
+            });
+          }
+        }
+      }
+    }
+
+    res.status(200).json({
+      success: true,
+      data: pendingTransfers,
+    });
+  } catch (error) {
+    console.error("Error retrieving pending transfers:", error);
+    res.status(500).json({ success: false, message: "Failed to retrieve pending transfers" });
+  }
+});
+
+// Admin: Approve event transfer request
+app.patch("/api/v1/admin/approve-event-transfer/:activityId", verifyTokenEarly, async (req, res) => {
+  const { activityId } = req.params;
+  try {
+    const user = req.user;
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Forbidden. Admin only." });
+    }
+
+    const result = await organizationCollections.updateOne(
+      { "activities._id": new ObjectId(activityId) },
+      { $set: { "activities.$.eventTransferStatus": "approved" } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Activity not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Event transfer approved successfully.",
+    });
+  } catch (error) {
+    console.error("Error approving event transfer:", error);
+    res.status(500).json({ success: false, message: "Failed to approve event transfer" });
+  }
+});
+
+// Admin: Reject event transfer request
+app.patch("/api/v1/admin/reject-event-transfer/:activityId", verifyTokenEarly, async (req, res) => {
+  const { activityId } = req.params;
+  try {
+    const user = req.user;
+    if (!user || user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Forbidden. Admin only." });
+    }
+
+    const result = await organizationCollections.updateOne(
+      { "activities._id": new ObjectId(activityId) },
+      { $set: { "activities.$.eventTransferStatus": "rejected" } }
+    );
+
+    if (result.matchedCount === 0) {
+      return res.status(404).json({ success: false, message: "Activity not found" });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "Event transfer rejected successfully.",
+    });
+  } catch (error) {
+    console.error("Error rejecting event transfer:", error);
+    res.status(500).json({ success: false, message: "Failed to reject event transfer" });
   }
 });
 
@@ -10079,6 +10853,7 @@ app.get("/api/channels", async (req, res) => {
   try {
     const channels = await channelsCollection
       .find({ status: "approved" })
+      .sort({ lastMessageAt: -1, updatedAt: -1, createdAt: -1 })
       .toArray();
     res.status(200).json(channels);
   } catch (error) {
@@ -10090,7 +10865,10 @@ app.get("/api/channels", async (req, res) => {
 app.get("/api/channels/admin", async (req, res) => {
   try {
     console.log("hit");
-    const channels = await channelsCollection.find({}).toArray();
+    const channels = await channelsCollection
+      .find({})
+      .sort({ lastMessageAt: -1, updatedAt: -1, createdAt: -1 })
+      .toArray();
     res.status(200).json(channels);
   } catch (error) {
     console.error("Error fetching channels:", error);
@@ -10142,7 +10920,7 @@ app.get("/api/channels/:channelId", async (req, res) => {
 
 app.post("/api/channels/:channelId/messages", async (req, res) => {
   const { channelId } = req.params;
-  const { text, fileUrl, fileType, fileName, senderId, senderName, timestamp } =
+  const { text, fileUrl, fileType, fileName, senderId, senderName, senderProfileImage, timestamp } =
     req.body;
 
   if (!senderId || !channelId) {
@@ -10150,6 +10928,8 @@ app.post("/api/channels/:channelId/messages", async (req, res) => {
   }
 
   try {
+    const now = timestamp ? new Date(timestamp) : new Date();
+
     const newMessage = {
       channelId: new ObjectId(channelId),
       senderId: new ObjectId(senderId),
@@ -10158,18 +10938,57 @@ app.post("/api/channels/:channelId/messages", async (req, res) => {
       fileUrl: fileUrl || null,
       fileType: fileType || null,
       fileName: fileName || null,
-      timestamp: timestamp ? new Date(timestamp) : new Date(),
+      timestamp: now,
     };
 
     const result = await channelessagesCollection.insertOne(newMessage);
 
-    if (result.insertedId) {
-      res
-        .status(201)
-        .json({ message: { _id: result.insertedId, ...newMessage } });
-    } else {
+    if (!result.insertedId) {
       throw new Error("Message insert failed");
     }
+
+    // Fetch channel details for cross-posting
+    const channel = await channelsCollection.findOne({ _id: new ObjectId(channelId) });
+
+    // Update channel's lastMessage and lastMessageAt for ranking
+    await channelsCollection.updateOne(
+      { _id: new ObjectId(channelId) },
+      {
+        $set: {
+          lastMessage: text || (fileType ? `[${fileType}]` : "Attachment"),
+          lastMessageAt: now,
+          updatedAt: now,
+        },
+      }
+    );
+
+    // Cross-post to opinionCollections if there is text or media
+    if (channel && (text || fileUrl)) {
+      const opinionPost = {
+        userId: new ObjectId(senderId),
+        userName: senderName || "Unknown",
+        userProfileImage: senderProfileImage || null,
+        description: text || "",
+        image: (fileType && fileType.startsWith("image")) ? fileUrl : null,
+        video: (fileType && fileType.startsWith("video")) ? fileUrl : null,
+        pdf: (fileType && fileType === "pdf") ? fileUrl : null,
+        likes: 0,
+        likedBy: [],
+        comments: [],
+        shares: 0,
+        channelId: channelId,
+        channelName: channel.name || "",
+        date: now.toLocaleDateString(),
+        time: now.toLocaleTimeString(),
+        createdAt: now,
+        privacy: "public",
+      };
+      await opinionCollections.insertOne(opinionPost);
+    }
+
+    res
+      .status(201)
+      .json({ message: { _id: result.insertedId, ...newMessage } });
   } catch (err) {
     console.error("Error saving message:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -13616,7 +14435,9 @@ app.post("/api/social-response/complaint", async (req, res) => {
     res.json({ success: true, message: "Complaint submitted successfully" });
   } catch (error) {
     console.error("Complaint Submit Error:", error);
-    res.status(500).json({ success: false, message: "Failed to submit complaint" });
+    res
+      .status(500)
+      .json({ success: false, message: "Failed to submit complaint" });
   }
 });
 
@@ -13657,25 +14478,27 @@ app.get("/api/social-response/professionals", async (req, res) => {
     const query = { status: "approved" };
     if (type) query.type = type;
 
-    const professionals = await socialProfessionalsCollection.aggregate([
-      { $match: query },
-      {
-        $lookup: {
-          from: "users",
-          localField: "userId",
-          foreignField: "_id",
-          as: "userDetails"
-        }
-      },
-      {
-        $addFields: {
-          profileImage: { $arrayElemAt: ["$userDetails.profileImage", 0] }
-        }
-      },
-      {
-        $project: { userDetails: 0 }
-      }
-    ]).toArray();
+    const professionals = await socialProfessionalsCollection
+      .aggregate([
+        { $match: query },
+        {
+          $lookup: {
+            from: "users",
+            localField: "userId",
+            foreignField: "_id",
+            as: "userDetails",
+          },
+        },
+        {
+          $addFields: {
+            profileImage: { $arrayElemAt: ["$userDetails.profileImage", 0] },
+          },
+        },
+        {
+          $project: { userDetails: 0 },
+        },
+      ])
+      .toArray();
 
     // Filter by active hours AND daily limit
     const now = new Date();
@@ -13684,17 +14507,24 @@ app.get("/api/social-response/professionals", async (req, res) => {
     startOfDay.setHours(0, 0, 0, 0);
 
     // Get appointment counts for all professionals today to hide those at limit
-    const dailyCounts = await socialAppointmentsCollection.aggregate([
-      { $match: { createdAt: { $gte: startOfDay }, status: { $in: ['pending', 'approved'] } } },
-      { $group: { _id: "$professionalId", count: { $sum: 1 } } }
-    ]).toArray();
+    const dailyCounts = await socialAppointmentsCollection
+      .aggregate([
+        {
+          $match: {
+            createdAt: { $gte: startOfDay },
+            status: { $in: ["pending", "approved"] },
+          },
+        },
+        { $group: { _id: "$professionalId", count: { $sum: 1 } } },
+      ])
+      .toArray();
 
     const countMap = dailyCounts.reduce((acc, curr) => {
       acc[curr._id.toString()] = curr.count;
       return acc;
     }, {});
 
-    const filtered = professionals.filter(p => {
+    const filtered = professionals.filter((p) => {
       // 1. Check Daily Limit (Requirement 5)
       if (p.messageLimit) {
         const count = countMap[p._id.toString()] || 0;
@@ -13703,8 +14533,8 @@ app.get("/api/social-response/professionals", async (req, res) => {
 
       // 2. Check Active Hours
       if (!p.activeStartTime || !p.activeEndTime) return true;
-      const [startH, startM] = p.activeStartTime.split(':').map(Number);
-      const [endH, endM] = p.activeEndTime.split(':').map(Number);
+      const [startH, startM] = p.activeStartTime.split(":").map(Number);
+      const [endH, endM] = p.activeEndTime.split(":").map(Number);
       const startMin = startH * 60 + startM;
       const endMin = endH * 60 + endM;
 
@@ -13728,15 +14558,17 @@ app.post("/api/social-response/book", verifyTokenEarly, async (req, res) => {
     const userId = new ObjectId(req.user._id);
 
     // Requirement 4: Patient cannot book more than 3 active appointments
-    const activePatientBookings = await socialAppointmentsCollection.countDocuments({
-      userId,
-      status: { $in: ['pending', 'approved'] }
-    });
+    const activePatientBookings =
+      await socialAppointmentsCollection.countDocuments({
+        userId,
+        status: { $in: ["pending", "approved"] },
+      });
 
     if (activePatientBookings >= 3) {
       return res.status(400).json({
         success: false,
-        message: "You already have 3 active appointment requests. Please wait for them to be completed or declined before booking more."
+        message:
+          "You already have 3 active appointment requests. Please wait for them to be completed or declined before booking more.",
       });
     }
     const professional = await socialProfessionalsCollection.findOne({
@@ -13748,7 +14580,7 @@ app.post("/api/social-response/book", verifyTokenEarly, async (req, res) => {
       startOfDay.setHours(0, 0, 0, 0);
       const dailyCount = await socialAppointmentsCollection.countDocuments({
         professionalId: new ObjectId(professionalId),
-        status: { $in: ['pending', 'approved'] },
+        status: { $in: ["pending", "approved"] },
         createdAt: { $gte: startOfDay },
       });
       if (dailyCount >= professional.messageLimit) {
@@ -13776,7 +14608,10 @@ app.post("/api/social-response/book", verifyTokenEarly, async (req, res) => {
         professional.userId,
         "New Appointment!",
         `You have a new appointment request for ${date} at ${time}`,
-        { appointmentId: result.insertedId.toString(), type: "SOCIAL_APPOINTMENT" },
+        {
+          appointmentId: result.insertedId.toString(),
+          type: "SOCIAL_APPOINTMENT",
+        },
       );
     }
 
@@ -13787,246 +14622,325 @@ app.post("/api/social-response/book", verifyTokenEarly, async (req, res) => {
 });
 
 // Check if current user is an approved professional
-app.get("/api/social-response/my-professional-status", verifyTokenEarly, async (req, res) => {
-  try {
-    const userId = new ObjectId(req.user._id);
-    const professional = await socialProfessionalsCollection.findOne({ userId });
-    if (!professional) {
-      return res.json({ success: true, isProfessional: false, data: null });
+app.get(
+  "/api/social-response/my-professional-status",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      const userId = new ObjectId(req.user._id);
+      const professional = await socialProfessionalsCollection.findOne({
+        userId,
+      });
+      if (!professional) {
+        return res.json({ success: true, isProfessional: false, data: null });
+      }
+      res.json({ success: true, isProfessional: true, data: professional });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
-    res.json({ success: true, isProfessional: true, data: professional });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+  },
+);
 
 // Get incoming appointments for a professional (dashboard)
-app.get("/api/social-response/professional-dashboard", verifyTokenEarly, async (req, res) => {
-  try {
-    const userId = new ObjectId(req.user._id);
-    const professional = await socialProfessionalsCollection.findOne({ userId });
-    if (!professional) {
-      return res.status(403).json({ success: false, message: "Not a professional" });
-    }
+app.get(
+  "/api/social-response/professional-dashboard",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      const userId = new ObjectId(req.user._id);
+      const professional = await socialProfessionalsCollection.findOne({
+        userId,
+      });
+      if (!professional) {
+        return res
+          .status(403)
+          .json({ success: false, message: "Not a professional" });
+      }
 
-    const appointments = await socialAppointmentsCollection
-      .find({ professionalId: professional._id })
-      .sort({ createdAt: -1 })
-      .toArray();
+      const appointments = await socialAppointmentsCollection
+        .find({ professionalId: professional._id })
+        .sort({ createdAt: -1 })
+        .toArray();
 
-    const enriched = await Promise.all(appointments.map(async (apt) => {
-      const patient = await usersCollections.findOne({ _id: apt.userId });
-      return {
-        ...apt,
-        patientName: patient?.name || "Unknown",
-        patientPhone: patient?.phone || "",
-        patientImage: patient?.profileImage || "",
+      const enriched = await Promise.all(
+        appointments.map(async (apt) => {
+          const patient = await usersCollections.findOne({ _id: apt.userId });
+          return {
+            ...apt,
+            patientName: patient?.name || "Unknown",
+            patientPhone: patient?.phone || "",
+            patientImage: patient?.profileImage || "",
+          };
+        }),
+      );
+
+      const stats = {
+        total: enriched.length,
+        pending: enriched.filter((a) => a.status === "pending").length,
+        approved: enriched.filter((a) => a.status === "approved").length,
+        cancelled: enriched.filter((a) => a.status === "cancelled").length,
+        finished: enriched.filter((a) => a.status === "finished").length,
       };
-    }));
 
-    const stats = {
-      total: enriched.length,
-      pending: enriched.filter(a => a.status === 'pending').length,
-      approved: enriched.filter(a => a.status === 'approved').length,
-      cancelled: enriched.filter(a => a.status === 'cancelled').length,
-      finished: enriched.filter(a => a.status === 'finished').length,
-    };
-
-    res.json({ success: true, data: enriched, stats, professional });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+      res.json({ success: true, data: enriched, stats, professional });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+);
 
 // Update appointment status (Accept/Decline)
-app.patch("/api/social-response/appointments/:id/status", verifyTokenEarly, async (req, res) => {
-  try {
-    const { status } = req.body; // accepted, cancelled, completed
-    const appointmentId = new ObjectId(req.params.id);
+app.patch(
+  "/api/social-response/appointments/:id/status",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      const { status } = req.body; // accepted, cancelled, completed
+      const appointmentId = new ObjectId(req.params.id);
 
-    const appointment = await socialAppointmentsCollection.findOne({ _id: appointmentId });
-    if (!appointment) {
-      return res.status(404).json({ success: false, message: "Appointment not found" });
-    }
+      const appointment = await socialAppointmentsCollection.findOne({
+        _id: appointmentId,
+      });
+      if (!appointment) {
+        return res
+          .status(404)
+          .json({ success: false, message: "Appointment not found" });
+      }
 
-    // Verify if the user is the professional
-    const professional = await socialProfessionalsCollection.findOne({ 
-      _id: appointment.professionalId,
-      userId: new ObjectId(req.user._id)
-    });
-
-    if (!professional && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: "Unauthorized" });
-    }
-
-    await socialAppointmentsCollection.updateOne(
-      { _id: appointmentId },
-      { $set: { status, updatedAt: new Date() } }
-    );
-
-    if (status === "approved") {
-      // Create or find conversation for Social Response
-      const participants = [
-        new ObjectId(appointment.userId),
-        new ObjectId(req.user._id), // The professional
-      ];
-
-      // Check if conversation already exists
-      const existingConv = await conversationsCollection.findOne({
-        participants: { $all: participants },
-        category: "social_response",
+      // Verify if the user is the professional
+      const professional = await socialProfessionalsCollection.findOne({
+        _id: appointment.professionalId,
+        userId: new ObjectId(req.user._id),
       });
 
-      if (!existingConv) {
-        await conversationsCollection.insertOne({
-          participants,
-          category: "social_response",
-          isGroup: false,
-          unreadCount: {},
-          mutedBy: [],
-          lastMessageAt: new Date(),
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        });
+      if (!professional && req.user.role !== "admin") {
+        return res
+          .status(403)
+          .json({ success: false, message: "Unauthorized" });
       }
+
+      await socialAppointmentsCollection.updateOne(
+        { _id: appointmentId },
+        { $set: { status, updatedAt: new Date() } },
+      );
+
+      if (status === "approved") {
+        // Create or find conversation for Social Response
+        const participants = [
+          new ObjectId(appointment.userId),
+          new ObjectId(req.user._id), // The professional
+        ];
+
+        // Check if conversation already exists
+        const existingConv = await conversationsCollection.findOne({
+          participants: { $all: participants },
+          category: "social_response",
+        });
+
+        if (!existingConv) {
+          await conversationsCollection.insertOne({
+            participants,
+            category: "social_response",
+            isGroup: false,
+            unreadCount: {},
+            mutedBy: [],
+            lastMessageAt: new Date(),
+            createdAt: new Date(),
+            updatedAt: new Date(),
+          });
+        }
+      }
+
+      // Notify user
+      sendPushNotification(
+        appointment.userId,
+        "Appointment Update",
+        `Your appointment request has been ${status}`,
+        {
+          appointmentId: appointmentId.toString(),
+          status,
+          type: "SOCIAL_APPOINTMENT_UPDATE",
+        },
+      );
+
+      res.json({ success: true, message: `Appointment ${status}` });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
-
-    // Notify user
-    sendPushNotification(
-      appointment.userId,
-      "Appointment Update",
-      `Your appointment request has been ${status}`,
-      { appointmentId: appointmentId.toString(), status, type: "SOCIAL_APPOINTMENT_UPDATE" }
-    );
-
-    res.json({ success: true, message: `Appointment ${status}` });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+  },
+);
 
 // Admin: Get all social response professionals/applications
-app.get("/api/admin/social-response/professionals", verifyTokenEarly, async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: "Unauthorized" });
+app.get(
+  "/api/admin/social-response/professionals",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      if (req.user.role !== "admin") {
+        return res
+          .status(403)
+          .json({ success: false, message: "Unauthorized" });
+      }
+
+      const professionals = await socialProfessionalsCollection
+        .find({})
+        .sort({ createdAt: -1 })
+        .toArray();
+
+      res.json({ success: true, data: professionals });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
-
-    const professionals = await socialProfessionalsCollection
-      .find({})
-      .sort({ createdAt: -1 })
-      .toArray();
-
-    res.json({ success: true, data: professionals });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+  },
+);
 
 // Admin: Update professional status (approve/reject)
-app.patch("/api/admin/social-response/professionals/:id/status", verifyTokenEarly, async (req, res) => {
-  try {
-    if (req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: "Unauthorized" });
+app.patch(
+  "/api/admin/social-response/professionals/:id/status",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      if (req.user.role !== "admin") {
+        return res
+          .status(403)
+          .json({ success: false, message: "Unauthorized" });
+      }
+
+      const { status } = req.body; // approved, rejected
+      const profId = new ObjectId(req.params.id);
+
+      await socialProfessionalsCollection.updateOne(
+        { _id: profId },
+        { $set: { status, updatedAt: new Date() } },
+      );
+
+      res.json({ success: true, message: `Status updated to ${status}` });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
-
-    const { status } = req.body; // approved, rejected
-    const profId = new ObjectId(req.params.id);
-
-    await socialProfessionalsCollection.updateOne(
-      { _id: profId },
-      { $set: { status, updatedAt: new Date() } }
-    );
-
-    res.json({ success: true, message: `Status updated to ${status}` });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+  },
+);
 
 // Get appointments for current user
-app.get("/api/social-response/my-appointments", verifyTokenEarly, async (req, res) => {
-  try {
-    const userId = new ObjectId(req.user._id);
+app.get(
+  "/api/social-response/my-appointments",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      const userId = new ObjectId(req.user._id);
 
-    // Check if the user is also a professional
-    const professional = await socialProfessionalsCollection.findOne({ userId });
+      // Check if the user is also a professional
+      const professional = await socialProfessionalsCollection.findOne({
+        userId,
+      });
 
-    let query = {};
-    if (professional) {
-      // Get appointments where I am the professional OR the patient
-      query = {
-        $or: [
-          { userId: userId },
-          { professionalId: professional._id }
-        ]
-      };
-    } else {
-      // Just a patient
-      query = { userId: userId };
-    }
+      let query = {};
+      if (professional) {
+        // Get appointments where I am the professional OR the patient
+        query = {
+          $or: [{ userId: userId }, { professionalId: professional._id }],
+        };
+      } else {
+        // Just a patient
+        query = { userId: userId };
+      }
 
-    const appointments = await socialAppointmentsCollection
-      .find(query)
-      .sort({ createdAt: -1 })
-      .toArray();
+      const appointments = await socialAppointmentsCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .toArray();
 
-    // Attach names
-    const enriched = await Promise.all(appointments.map(async (apt) => {
-        const prof = await socialProfessionalsCollection.findOne({ _id: apt.professionalId });
-        const patient = await usersCollections.findOne({ _id: apt.userId });
-        return {
+      // Attach names
+      const enriched = await Promise.all(
+        appointments.map(async (apt) => {
+          const prof = await socialProfessionalsCollection.findOne({
+            _id: apt.professionalId,
+          });
+          const patient = await usersCollections.findOne({ _id: apt.userId });
+          return {
             ...apt,
             professionalName: prof?.name,
             patientName: patient?.name,
             type: prof?.type,
             professionalUserId: prof?.userId?.toString(), // ✅ needed for deep link chat
-        };
-    }));
+          };
+        }),
+      );
 
-    res.json({ success: true, data: enriched });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+      res.json({ success: true, data: enriched });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
+    }
+  },
+);
 
 // Update professional profile (bio, clinic, degrees, etc.)
-app.patch("/api/social-response/my-professional", verifyTokenEarly, async (req, res) => {
-  try {
-    const userId = new ObjectId(req.user._id);
-    const allowedFields = ['bio', 'clinic', 'address', 'degrees', 'certifications', 'consultationFee', 'availableHours', 'availableDays', 'activeStartTime', 'activeEndTime', 'locations'];
-    const update = {};
-    allowedFields.forEach(f => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
-    if (Object.keys(update).length === 0) {
-      return res.status(400).json({ success: false, message: 'No valid fields to update' });
+app.patch(
+  "/api/social-response/my-professional",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      const userId = new ObjectId(req.user._id);
+      const allowedFields = [
+        "bio",
+        "clinic",
+        "address",
+        "degrees",
+        "certifications",
+        "consultationFee",
+        "availableHours",
+        "availableDays",
+        "activeStartTime",
+        "activeEndTime",
+        "locations",
+      ];
+      const update = {};
+      allowedFields.forEach((f) => {
+        if (req.body[f] !== undefined) update[f] = req.body[f];
+      });
+      if (Object.keys(update).length === 0) {
+        return res
+          .status(400)
+          .json({ success: false, message: "No valid fields to update" });
+      }
+      await socialProfessionalsCollection.updateOne(
+        { userId },
+        { $set: { ...update, updatedAt: new Date() } },
+      );
+      res.json({ success: true, message: "Profile updated successfully" });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
-    await socialProfessionalsCollection.updateOne(
-      { userId },
-      { $set: { ...update, updatedAt: new Date() } }
-    );
-    res.json({ success: true, message: 'Profile updated successfully' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+  },
+);
 
 // Update professional monthly appointment limit
-app.patch("/api/social-response/my-message-limit", verifyTokenEarly, async (req, res) => {
-  try {
-    const userId = new ObjectId(req.user._id);
-    const { limit } = req.body;
-    if (typeof limit !== 'number' || limit < 1 || limit > 200) {
-      return res.status(400).json({ success: false, message: 'Limit must be between 1 and 200' });
+app.patch(
+  "/api/social-response/my-message-limit",
+  verifyTokenEarly,
+  async (req, res) => {
+    try {
+      const userId = new ObjectId(req.user._id);
+      const { limit } = req.body;
+      if (typeof limit !== "number" || limit < 1 || limit > 200) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Limit must be between 1 and 200" });
+      }
+      await socialProfessionalsCollection.updateOne(
+        { userId },
+        { $set: { messageLimit: limit, updatedAt: new Date() } },
+      );
+      res.json({
+        success: true,
+        message: "Daily appointment limit updated",
+        limit,
+      });
+    } catch (error) {
+      res.status(500).json({ success: false, message: error.message });
     }
-    await socialProfessionalsCollection.updateOne(
-      { userId },
-      { $set: { messageLimit: limit, updatedAt: new Date() } }
-    );
-    res.json({ success: true, message: 'Daily appointment limit updated', limit });
-  } catch (error) {
-    res.status(500).json({ success: false, message: error.message });
-  }
-});
+  },
+);
 
 // Global error handler - Must be before server starts
 app.use((err, req, res, next) => {
