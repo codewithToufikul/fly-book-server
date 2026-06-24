@@ -4106,9 +4106,45 @@ app.post("/users/verify-otp", async (req, res) => {
 app.post("/users/register", async (req, res) => {
   await connectToMongo();
   try {
-    const { name, email, number, password, userLocation, referrerUsername } =
+    const { name, email, number, password, userLocation, referrerUsername, firebaseToken } =
       req.body;
     console.log(userLocation);
+
+    // Verify phone via Firebase token if provided
+    if (firebaseToken) {
+      try {
+        const decodedToken = await admin.auth().verifyIdToken(firebaseToken);
+        const verifiedPhone = decodedToken.phone_number; // Format: e.g. +8801712345678
+        if (!verifiedPhone) {
+          return res.status(400).send({
+            success: false,
+            message: "Token does not contain a verified phone number.",
+          });
+        }
+        
+        // Normalize registration number and verifiedPhone for comparison
+        const normRegister = number.trim().replace(/^\+/, "");
+        const normVerified = verifiedPhone.trim().replace(/^\+/, "");
+        
+        // Check if numbers match
+        const isMatch = normRegister === normVerified || 
+                        (normRegister.startsWith("0") && normRegister.slice(1) === normVerified.slice(3)) ||
+                        (normVerified.startsWith("880") && normVerified.slice(3) === normRegister.slice(1));
+                        
+        if (!isMatch) {
+          return res.status(400).send({
+            success: false,
+            message: "Phone number mismatch. Verification token does not match the provided number.",
+          });
+        }
+      } catch (tokenError) {
+        console.error("Firebase registration token verify failed:", tokenError);
+        return res.status(400).send({
+          success: false,
+          message: "Invalid phone verification token. Please verify your phone number again.",
+        });
+      }
+    }
 
     // Check if email was verified via OTP (optional check - can be enabled for security)
     // Uncomment below to enforce email verification
@@ -5102,6 +5138,70 @@ app.put("/api/user/change-password", async (req, res) => {
   }
 });
 
+// Find User by Phone (for Forgot Password search)
+app.get("/api/user/find-by-phone", async (req, res) => {
+  await connectToMongo();
+  try {
+    const { phone } = req.query;
+    if (!phone) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Phone number is required" });
+    }
+
+    const cleanPhone = phone.trim();
+    let query = { number: cleanPhone };
+    if (cleanPhone.startsWith("+880")) {
+      const legacyFormat = "0" + cleanPhone.slice(4);
+      query = { $or: [{ number: cleanPhone }, { number: legacyFormat }] };
+    } else if (cleanPhone.startsWith("0") && cleanPhone.length === 11) {
+      const internationalFormat = "+880" + cleanPhone.slice(1);
+      query = {
+        $or: [{ number: cleanPhone }, { number: internationalFormat }],
+      };
+    } else if (cleanPhone.startsWith("880")) {
+      const legacyFormat = "0" + cleanPhone.slice(3);
+      const internationalFormat = "+" + cleanPhone;
+      query = {
+        $or: [
+          { number: cleanPhone },
+          { number: legacyFormat },
+          { number: internationalFormat },
+        ],
+      };
+    }
+
+    const user = await usersCollections.findOne(query);
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, message: "No account found with this phone number" });
+    }
+
+    // Mask phone number for security (e.g., +8801******24)
+    const userPhone = user.number || "";
+    const maskedPhone =
+      userPhone.length > 7
+        ? userPhone.slice(0, 5) + "*".repeat(userPhone.length - 7) + userPhone.slice(-2)
+        : userPhone;
+
+    res.json({
+      success: true,
+      user: {
+        name: user.name,
+        profileImage: user.profileImage || "",
+        email: user.email || "",
+        phone: maskedPhone,
+        fullPhone: user.number,
+      },
+    });
+  } catch (error) {
+    console.error("Find by phone error:", error);
+    res.status(500).json({ success: false, message: "Internal server error" });
+  }
+});
+
 // Find User by Email (for Forgot Password search)
 app.get("/api/user/find-by-email", async (req, res) => {
   await connectToMongo();
@@ -5253,6 +5353,67 @@ app.post("/api/user/reset-password-otp", async (req, res) => {
 
     res.json({ success: true, message: "Password reset successful" });
   } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Forgot Password - Reset with Firebase Phone Auth Token
+app.post("/api/user/reset-password-firebase", async (req, res) => {
+  await connectToMongo();
+  try {
+    const { firebaseToken, newPassword } = req.body;
+
+    if (!firebaseToken || !newPassword) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Missing required fields" });
+    }
+
+    if (newPassword.length < 6) {
+      return res
+        .status(400)
+        .json({ success: false, message: "Password must be at least 6 characters" });
+    }
+
+    // Verify Firebase token
+    let verifiedPhone;
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(firebaseToken);
+      verifiedPhone = decodedToken.phone_number; // Format: e.g. +8801712345678
+      if (!verifiedPhone) {
+        return res
+          .status(400)
+          .json({ success: false, message: "Token does not contain a verified phone number" });
+      }
+    } catch (firebaseError) {
+      console.error("Firebase token verification failed:", firebaseError);
+      return res
+        .status(400)
+        .json({ success: false, message: "Invalid verification token. Please try again." });
+    }
+
+    // Search user by verifiedPhone (need to check standard formats)
+    let query = { number: verifiedPhone };
+    if (verifiedPhone.startsWith("+880")) {
+      const legacyFormat = "0" + verifiedPhone.slice(4);
+      query = { $or: [{ number: verifiedPhone }, { number: legacyFormat }] };
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    const result = await usersCollections.updateOne(
+      query,
+      { $set: { password: hashedPassword } },
+    );
+
+    if (result.matchedCount === 0) {
+      return res
+        .status(404)
+        .json({ success: false, message: "User not found" });
+    }
+
+    res.json({ success: true, message: "Password reset successful" });
+  } catch (error) {
+    console.error("Reset password firebase error:", error);
     res.status(500).json({ success: false, message: error.message });
   }
 });
