@@ -21,6 +21,7 @@ const stream = require("stream");
 const dns = require("dns");
 const fs = require("fs");
 const path = require("path");
+const cron = require("node-cron");
 
 // Ensure public/pdfs directory exists
 const publicDir = path.join(__dirname, "public");
@@ -33,7 +34,7 @@ try {
   if (typeof dns.setDefaultResultOrder === "function") {
     dns.setDefaultResultOrder("ipv4first");
   }
-} catch (_) {}
+} catch (_) { }
 
 const app = express();
 app.use("/public", express.static(publicDir));
@@ -876,9 +877,9 @@ app.get(
         const averageScore =
           scoredAttempts.length > 0
             ? Math.round(
-                scoredAttempts.reduce((sum, att) => sum + att.score, 0) /
-                  scoredAttempts.length,
-              )
+              scoredAttempts.reduce((sum, att) => sum + att.score, 0) /
+              scoredAttempts.length,
+            )
             : null;
 
         // Get latest attempt for each exam with full details
@@ -901,21 +902,21 @@ app.get(
             passingScore: exam.passingScore || 0,
             latestAttempt: latestAttempt
               ? {
-                  attemptId: latestAttempt._id,
-                  score: latestAttempt.score,
-                  passed: latestAttempt.passed,
-                  graded: latestAttempt.graded,
-                  createdAt: latestAttempt.createdAt,
-                  startedAt: latestAttempt.startedAt || null,
-                  submittedAt: latestAttempt.submittedAt || null,
-                  identityNumber: latestAttempt.identityNumber || null,
-                  correctAnswers: latestAttempt.correctAnswers,
-                  totalQuestions: latestAttempt.totalQuestions,
-                  // Include full answers for display
-                  answers: latestAttempt.answers || [],
-                  audioUrl: latestAttempt.audioUrl || null,
-                  feedback: latestAttempt.feedback || null,
-                }
+                attemptId: latestAttempt._id,
+                score: latestAttempt.score,
+                passed: latestAttempt.passed,
+                graded: latestAttempt.graded,
+                createdAt: latestAttempt.createdAt,
+                startedAt: latestAttempt.startedAt || null,
+                submittedAt: latestAttempt.submittedAt || null,
+                identityNumber: latestAttempt.identityNumber || null,
+                correctAnswers: latestAttempt.correctAnswers,
+                totalQuestions: latestAttempt.totalQuestions,
+                // Include full answers for display
+                answers: latestAttempt.answers || [],
+                audioUrl: latestAttempt.audioUrl || null,
+                feedback: latestAttempt.feedback || null,
+              }
               : null,
           };
         });
@@ -959,10 +960,10 @@ app.get(
         passRate:
           allAttempts.filter((att) => att.graded === true).length > 0
             ? Math.round(
-                (allAttempts.filter((att) => att.passed === true).length /
-                  allAttempts.filter((att) => att.graded === true).length) *
-                  100,
-              )
+              (allAttempts.filter((att) => att.passed === true).length /
+                allAttempts.filter((att) => att.graded === true).length) *
+              100,
+            )
             : 0,
         certificatesIssued: progressRecords.filter(
           (p) => p.certificateIssued === true,
@@ -1409,6 +1410,119 @@ const locationsCollection = db.collection("locationsCollection");
 const shopsCollection = db.collection("shopsCollection");
 const shopProductsCollection = db.collection("shopProductsCollection");
 const reportCollections = db.collection("reportCollections");
+
+// Scheduled job to send return reminders
+const sendReturnReminders = async () => {
+  console.log("⏰ [Cron] Starting return reminders check...");
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Find books that are currently successfully transferred
+    const activeBooks = await bookCollections.find({
+      transfer: "success",
+      transferTo: { $ne: null, $ne: "" },
+      transferredAt: { $exists: true }
+    }).toArray();
+
+    console.log(`⏰ [Cron] Found ${activeBooks.length} active borrowed books to inspect.`);
+
+    for (const book of activeBooks) {
+      if (!book.transferredAt) continue;
+
+      // Parse returnTime, e.g. "3 days", "7 days", "15 days", "30 days"
+      let returnDays = 7; // default fallback
+      if (book.returnTime) {
+        const match = book.returnTime.match(/(\d+)/);
+        if (match) {
+          returnDays = parseInt(match[1], 10);
+        }
+      }
+
+      const transferredDate = new Date(book.transferredAt);
+      const dueDate = new Date(transferredDate);
+      dueDate.setDate(dueDate.getDate() + returnDays);
+      dueDate.setHours(0, 0, 0, 0);
+
+      // Diff in days
+      const msDiff = dueDate.getTime() - today.getTime();
+      const daysDiff = Math.round(msDiff / (1000 * 60 * 60 * 24));
+
+      // Check if we already sent a reminder today
+      if (book.lastReminderSentAt) {
+        const lastSent = new Date(book.lastReminderSentAt);
+        if (lastSent.toDateString() === today.toDateString()) {
+          console.log(`⏰ [Cron] Reminder already sent today for book: ${book.bookName} (${book._id})`);
+          continue;
+        }
+      }
+
+      let title = "";
+      let body = "";
+      let sendNotification = false;
+
+      if (daysDiff === 3) {
+        // Before return time (3 days before)
+        title = "Book Return Reminder";
+        body = `Reminder: Please remember to return "${book.bookName}" in 3 days.`;
+        sendNotification = true;
+      } else if (daysDiff === 1) {
+        // Before return time (1 day before)
+        title = "Book Return Reminder";
+        body = `Reminder: Please remember to return "${book.bookName}" by tomorrow.`;
+        sendNotification = true;
+      } else if (daysDiff === 0) {
+        // On return time (due today)
+        title = "Book Due Today";
+        body = `"${book.bookName}" is due today. Please return it to its owner.`;
+        sendNotification = true;
+      } else if (daysDiff < 0) {
+        // After return time (Overdue)
+        title = "Book Return Overdue";
+        body = `"${book.bookName}" is overdue by ${Math.abs(daysDiff)} day(s). Please return it immediately.`;
+        sendNotification = true;
+      }
+
+      if (sendNotification) {
+        console.log(`⏰ [Cron] Sending reminder to user ${book.transferTo} for book: ${book.bookName}`);
+        await sendPushNotification(
+          book.transferTo.toString(),
+          title,
+          body,
+          {
+            type: "bookReturnReminder",
+            bookId: book._id.toString(),
+            senderId: book.userId ? book.userId.toString() : "",
+            senderName: book.owner || ""
+          }
+        );
+
+        // Update book collection
+        await bookCollections.updateOne(
+          { _id: book._id },
+          { $set: { lastReminderSentAt: today } }
+        );
+      }
+    }
+    console.log("⏰ [Cron] Return reminders check finished.");
+  } catch (error) {
+    console.error("⏰ [Cron Error] Error in sendReturnReminders:", error);
+  }
+};
+
+// Schedule it to run daily at 9:00 AM
+cron.schedule("0 9 * * *", sendReturnReminders);
+
+// Endpoint to trigger reminders check manually for testing
+app.post("/books/test-reminders", async (req, res) => {
+  try {
+    await sendReturnReminders();
+    res.status(200).json({ success: true, message: "Reminders check executed manually." });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Create text index on opinions collection when the server starts
 
 const HUGGING_FACE_API_KEY = process.env.HUGGING_FACE_API_KEY;
@@ -2375,16 +2489,16 @@ app.get("/courses/:courseId/outline", verifyTokenEarly, async (req, res) => {
         })),
         exam: ex
           ? {
-              examId: ex._id,
-              type: ex.type,
-              passingScore: ex.passingScore,
-              questions: Array.isArray(ex.questions)
-                ? ex.questions.map((q) => ({
-                    question: q.question,
-                    options: q.options,
-                  }))
-                : [],
-            }
+            examId: ex._id,
+            type: ex.type,
+            passingScore: ex.passingScore,
+            questions: Array.isArray(ex.questions)
+              ? ex.questions.map((q) => ({
+                question: q.question,
+                options: q.options,
+              }))
+              : [],
+          }
           : null,
       };
     });
@@ -2456,9 +2570,9 @@ app.get("/exams/:examId", verifyTokenEarly, async (req, res) => {
       timeLimitMinutes: ex.timeLimitMinutes || null,
       questions: Array.isArray(ex.questions)
         ? ex.questions.map((q) => ({
-            question: q.question,
-            options: q.options,
-          }))
+          question: q.question,
+          options: q.options,
+        }))
         : [],
     };
     return res.json({ success: true, data: sanitized });
@@ -2709,13 +2823,13 @@ app.get("/exams/attempts/:attemptId/answer-sheet", verifyTokenEarly, async (req,
     // Metadata grid (2 columns)
     const startY = doc.y;
     doc.fontSize(10).fillColor("#374151");
-    
+
     // Column 1
     doc.font("Helvetica-Bold").text("Student Info", 40, startY);
     doc.font("Helvetica").text(`Name: ${student.name || "N/A"}`);
     doc.text(`Phone: ${student.number || "N/A"}`);
     doc.text(`Identity / Roll: ${attempt.identityNumber || student.number || "N/A"}`);
-    
+
     // Column 2
     doc.font("Helvetica-Bold").text("Exam Info", pageWidth / 2 + 20, startY);
     doc.font("Helvetica").text(`Exam Type: ${attempt.type.toUpperCase()}`);
@@ -2765,7 +2879,7 @@ app.get("/exams/attempts/:attemptId/answer-sheet", verifyTokenEarly, async (req,
 
       const cleanIndex = index + 1;
       doc.fontSize(11).fillColor("#1f2937").font("Helvetica-Bold").text(`Q${cleanIndex}. ${q.question || ""}`, 40);
-      
+
       if (q.options && q.options.length > 0) {
         doc.fontSize(9).fillColor("#6b7280").font("Helvetica");
         q.options.forEach((opt, optIndex) => {
@@ -2780,7 +2894,7 @@ app.get("/exams/attempts/:attemptId/answer-sheet", verifyTokenEarly, async (req,
 
       doc.moveDown(0.5);
       doc.fontSize(10).fillColor("#10b981").font("Helvetica-Bold").text("   Student Answer: ", { continued: true });
-      
+
       if (ansType === "image" || ansType === "pdf") {
         doc.fillColor("#2563eb").font("Helvetica-Oblique").text(`[Uploaded ${ansType.toUpperCase()} - Click to view]`, {
           link: studentAns,
@@ -2877,12 +2991,12 @@ app.get("/courses/:courseId/result-sheet", verifyTokenEarly, async (req, res) =>
 
     // ── Cover Header ──
     doc.fontSize(20).fillColor("#1e40af").font("Helvetica-Bold")
-       .text("FLYBOOK LEARNING PLATFORM", { align: "center" });
+      .text("FLYBOOK LEARNING PLATFORM", { align: "center" });
     doc.fontSize(14).fillColor("#374151").font("Helvetica-Bold")
-       .text("Course Result Sheet", { align: "center" });
+      .text("Course Result Sheet", { align: "center" });
     doc.moveDown(0.5);
     doc.fontSize(11).fillColor("#6b7280").font("Helvetica")
-       .text(`Course: ${course.title || courseId}`, { align: "center" });
+      .text(`Course: ${course.title || courseId}`, { align: "center" });
     doc.text(`Generated: ${new Date().toLocaleString()}`, { align: "center" });
     doc.moveDown(1);
     doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).lineWidth(1.5).strokeColor("#1e40af").stroke();
@@ -2919,9 +3033,9 @@ app.get("/courses/:courseId/result-sheet", verifyTokenEarly, async (req, res) =>
       const idNumber = atts[0]?.identityNumber || "";
 
       doc.fontSize(11).fillColor("#1f2937").font("Helvetica-Bold")
-         .text(`${serialNo}. ${studentName2}`, 40, doc.y, { continued: true });
+        .text(`${serialNo}. ${studentName2}`, 40, doc.y, { continued: true });
       doc.fillColor("#6b7280").font("Helvetica").fontSize(10)
-         .text(`   ${studentNumber}${idNumber ? " | ID: " + idNumber : ""}`);
+        .text(`   ${studentNumber}${idNumber ? " | ID: " + idNumber : ""}`);
 
       // Attempt rows
       doc.fontSize(9).fillColor("#374151").font("Helvetica");
@@ -2959,7 +3073,7 @@ app.get("/courses/:courseId/result-sheet", verifyTokenEarly, async (req, res) =>
     doc.moveTo(40, doc.y).lineTo(pageWidth - 40, doc.y).lineWidth(0.5).strokeColor("#d1d5db").stroke();
     doc.moveDown(0.5);
     doc.fontSize(8).fillColor("#9ca3af").font("Helvetica")
-       .text("Generated automatically by FlyBook App System — Confidential", { align: "center" });
+      .text("Generated automatically by FlyBook App System — Confidential", { align: "center" });
 
     doc.end();
     await done;
@@ -3497,7 +3611,7 @@ app.get("/communities", async (req, res) => {
         const decoded = jwt.verify(token, JWT_SECRET);
         const user = await usersCollections.findOne({ number: decoded.number });
         if (user) userId = user._id;
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const communities = await communityCollection
@@ -4121,16 +4235,16 @@ app.post("/users/register", async (req, res) => {
             message: "Token does not contain a verified phone number.",
           });
         }
-        
+
         // Normalize registration number and verifiedPhone for comparison
         const normRegister = number.trim().replace(/^\+/, "");
         const normVerified = verifiedPhone.trim().replace(/^\+/, "");
-        
+
         // Check if numbers match
-        const isMatch = normRegister === normVerified || 
-                        (normRegister.startsWith("0") && normRegister.slice(1) === normVerified.slice(3)) ||
-                        (normVerified.startsWith("880") && normVerified.slice(3) === normRegister.slice(1));
-                        
+        const isMatch = normRegister === normVerified ||
+          (normRegister.startsWith("0") && normRegister.slice(1) === normVerified.slice(3)) ||
+          (normVerified.startsWith("880") && normVerified.slice(3) === normRegister.slice(1));
+
         if (!isMatch) {
           return res.status(400).send({
             success: false,
@@ -5140,6 +5254,7 @@ app.put("/api/user/change-password", async (req, res) => {
 
 // Find User by Phone (for Forgot Password search)
 app.get("/api/user/find-by-phone", async (req, res) => {
+  console.log("Find user by phone hit here");
   await connectToMongo();
   try {
     const { phone } = req.query;
@@ -7625,7 +7740,7 @@ app.delete("/books/delete/:bookId", async (req, res) => {
 });
 
 app.post("/books/request", async (req, res) => {
-  const { bookId } = req.body;
+  const { bookId, requestFaceUrl } = req.body;
   const token = req.headers.authorization?.split(" ")[1];
 
   // Validate the token
@@ -7664,6 +7779,7 @@ app.post("/books/request", async (req, res) => {
           transfer: "pending",
           requestBy: currentUser._id,
           requestName: currentUser.name,
+          requestFaceUrl: requestFaceUrl || "",
         },
       },
     );
@@ -7864,7 +7980,11 @@ app.post("/books/request/trans", async (req, res) => {
     const updateResult = await bookCollections.updateOne(
       { _id: new ObjectId(bookId) },
       {
-        $set: { transfer: "success", transferTo: requestBy },
+        $set: {
+          transfer: "success",
+          transferTo: requestBy,
+          transferredAt: new Date(),
+        },
       },
     );
     if (updateResult.modifiedCount > 0) {
@@ -7990,6 +8110,83 @@ app.post("/books/return", async (req, res) => {
     res
       .status(500)
       .json({ error: "An error occurred while accepting the book." });
+  }
+});
+
+app.get("/books/defaulters", async (req, res) => {
+  try {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    // Find books that are currently successfully transferred
+    const activeBooks = await bookCollections.find({
+      transfer: "success",
+      transferTo: { $ne: null, $ne: "" },
+      transferredAt: { $exists: true }
+    }).toArray();
+
+    const defaulters = [];
+
+    for (const book of activeBooks) {
+      if (!book.transferredAt) continue;
+
+      let returnDays = 7; // default fallback
+      if (book.returnTime) {
+        const match = book.returnTime.match(/(\d+)/);
+        if (match) {
+          returnDays = parseInt(match[1], 10);
+        }
+      }
+
+      const transferredDate = new Date(book.transferredAt);
+      const dueDate = new Date(transferredDate);
+      dueDate.setDate(dueDate.getDate() + returnDays);
+      dueDate.setHours(0, 0, 0, 0);
+
+      // If due date is strictly before today (overdue)
+      if (dueDate.getTime() < today.getTime()) {
+        const borrowerId = book.transferTo;
+        let borrower = null;
+        if (ObjectId.isValid(borrowerId)) {
+          borrower = await usersCollections.findOne({ _id: new ObjectId(borrowerId) });
+        }
+        if (!borrower) {
+          borrower = await usersCollections.findOne({ _id: borrowerId });
+        }
+
+        if (borrower) {
+          // Calculate how many days overdue
+          const msDiff = today.getTime() - dueDate.getTime();
+          const daysOverdue = Math.round(msDiff / (1000 * 60 * 60 * 24));
+
+          defaulters.push({
+            bookId: book._id,
+            bookName: book.bookName,
+            writer: book.writer,
+            imageUrl: book.imageUrl,
+            transferredAt: book.transferredAt,
+            dueDate: dueDate,
+            daysOverdue: daysOverdue,
+            ownerName: book.owner || "",
+            ownerId: book.userId || "",
+            
+            // Defaulter user details
+            defaulterId: borrower._id,
+            defaulterName: borrower.name || book.requestName || "Unknown Borrower",
+            defaulterPhone: borrower.number || "",
+            // Use the face photo from verification (on the book)
+            faceVerificationUrl: book.requestFaceUrl || borrower.profileImage || "",
+            // Last location of the borrower
+            location: borrower.userLocation || null,
+          });
+        }
+      }
+    }
+
+    res.status(200).json({ success: true, data: defaulters });
+  } catch (error) {
+    console.error("Error fetching defaulters:", error);
+    res.status(500).json({ success: false, error: "An error occurred while fetching defaulters." });
   }
 });
 
@@ -8121,7 +8318,7 @@ app.delete("/onindo/delete/:bookId", async (req, res) => {
 });
 
 app.post("/onindo/books/request", async (req, res) => {
-  const { bookId } = req.body;
+  const { bookId, requestFaceUrl } = req.body;
   const token = req.headers.authorization?.split(" ")[1];
 
   // Validate the token
@@ -8161,6 +8358,7 @@ app.post("/onindo/books/request", async (req, res) => {
         $set: {
           requestBy: currentUser._id,
           requestName: currentUser.name,
+          requestFaceUrl: requestFaceUrl || "",
         },
       },
     );
@@ -10754,7 +10952,7 @@ app.get("/organizations/activities", async (req, res) => {
         commIdObj = post.communityId;
       }
       const community = commIdObj ? await communityCollection.findOne({ _id: commIdObj }) : null;
-      
+
       const pseudoOrg = {
         _id: post.communityId,
         orgName: community?.name || "Community Event",
