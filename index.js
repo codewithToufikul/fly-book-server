@@ -7950,7 +7950,7 @@ app.post("/books/request/trans", async (req, res) => {
     // Verify token
     const decoded = jwt.verify(token, JWT_SECRET);
 
-    // Find the current user
+    // Find the current user (sender/owner)
     const currentUser = await usersCollections.findOne({
       number: decoded.number,
     });
@@ -7964,41 +7964,58 @@ app.post("/books/request/trans", async (req, res) => {
       return res.status(404).json({ error: "Book not found." });
     }
 
-    const transHistory = {
-      sendId: currentUser._id,
-      sendName: currentUser.name,
-      bookImage: book.imageUrl,
-      bookName: book.bookName,
-      bookId: bookId,
-      receiveId: requestBy,
-      transName: requestName,
-      transDate: date,
-      transTime: time,
-      transfer: "transfer",
-    };
-    // Update the book with request details
+    // ── NEW: Set transfer to "transfer_pending" instead of "success" ──
+    // The receiver must confirm (with condition photos) to complete the transfer.
     const updateResult = await bookCollections.updateOne(
       { _id: new ObjectId(bookId) },
       {
         $set: {
-          transfer: "success",
+          transfer: "transfer_pending",
           transferTo: requestBy,
-          transferredAt: new Date(),
+          pendingTransferAt: new Date(),
+          pendingSenderId: currentUser._id,
+          pendingSenderName: currentUser.name,
+          pendingDate: date,
+          pendingTime: time,
         },
       },
     );
-    if (updateResult.modifiedCount > 0) {
-      await bookTransCollections.insertOne(transHistory);
-    } else {
+
+    if (updateResult.modifiedCount === 0) {
       return res
         .status(400)
-        .json({ error: "Failed to transfer the book. Try again later." });
+        .json({ error: "Failed to initiate transfer. Try again later." });
+    }
+
+    // ── Send FCM notification to receiver ──
+    await sendNotificationToUser(
+      requestBy,
+      "📦 Book is on its way!",
+      `${currentUser.name} has sent you "${book.bookName}". Accept it to complete the transfer.`,
+      {
+        type: "bookTransferReq",
+        bookId: bookId,
+        senderId: currentUser._id.toString(),
+        senderName: currentUser.name,
+      },
+    );
+
+    // ── Emit socket notification to receiver ──
+    if (global.io) {
+      global.io.to(requestBy.toString()).emit("newNotification", {
+        type: "bookTransferReq",
+        senderId: currentUser._id,
+        senderName: currentUser.name,
+        senderProfile: currentUser.profileImage,
+        notifyText: `${currentUser.name} has sent you "${book.bookName}". Tap to accept!`,
+        bookId: bookId,
+      });
     }
 
     // Respond with success
-    res.status(200).json({ message: "Book request accept successfully." });
+    res.status(200).json({ message: "Transfer request sent to receiver." });
   } catch (error) {
-    console.error("Error while canceling book:", error);
+    console.error("Error while initiating book transfer:", error);
 
     // Specific JWT error handling
     if (error.name === "JsonWebTokenError") {
@@ -8008,7 +8025,154 @@ app.post("/books/request/trans", async (req, res) => {
     // General error response
     res
       .status(500)
-      .json({ error: "An error occurred while accepting the book." });
+      .json({ error: "An error occurred while initiating the transfer." });
+  }
+});
+
+// ─── NEW: Confirm Book Transfer (Receiver accepts with condition photos) ──────
+app.post("/books/request/confirm", async (req, res) => {
+  const { bookId, conditionPhotos, location } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  if (!bookId || !ObjectId.isValid(bookId)) {
+    return res.status(400).json({ error: "Invalid or missing book ID." });
+  }
+
+  if (!conditionPhotos || !Array.isArray(conditionPhotos) || conditionPhotos.length === 0) {
+    return res.status(400).json({ error: "At least one condition photo is required." });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Find the receiver (current user)
+    const receiver = await usersCollections.findOne({ number: decoded.number });
+    if (!receiver) {
+      return res.status(404).json({ error: "User not found." });
+    }
+
+    // Find the book
+    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    if (!book) {
+      return res.status(404).json({ error: "Book not found." });
+    }
+
+    // Ensure this user is the intended receiver
+    if (book.transferTo?.toString() !== receiver._id.toString()) {
+      return res.status(403).json({ error: "You are not the intended receiver of this book." });
+    }
+
+    // Ensure the book is in transfer_pending state
+    if (book.transfer !== "transfer_pending") {
+      return res.status(400).json({ error: "Book is not awaiting transfer confirmation." });
+    }
+
+    // Process location details if provided
+    let locationObj = null;
+    if (location && location.coordinates) {
+      locationObj = {
+        type: "Point",
+        coordinates: [
+          parseFloat(location.coordinates[0]),
+          parseFloat(location.coordinates[1])
+        ],
+        locationName: location.locationName || "Dhaka"
+      };
+    } else if (receiver.userLocation) {
+      // Fallback to receiver's last profile location if gps failed
+      locationObj = {
+        type: "Point",
+        coordinates: receiver.userLocation.coordinates,
+        locationName: "Dhaka"
+      };
+    }
+
+    // Build transfer history record
+    const transHistory = {
+      sendId: book.pendingSenderId || book.userId,
+      sendName: book.pendingSenderName || book.owner,
+      bookImage: book.imageUrl,
+      bookName: book.bookName,
+      bookId: bookId,
+      receiveId: receiver._id,
+      receiveName: receiver.name,
+      transName: receiver.name,
+      transDate: book.pendingDate || new Date().toLocaleDateString(),
+      transTime: book.pendingTime || new Date().toLocaleTimeString(),
+      confirmedAt: new Date(),
+      conditionPhotos: conditionPhotos,
+      location: locationObj,
+      transfer: "transfer",
+    };
+
+    // Update book to "success", store condition photos and update location
+    const updateResult = await bookCollections.updateOne(
+      { _id: new ObjectId(bookId) },
+      {
+        $set: {
+          transfer: "success",
+          transferredAt: new Date(),
+          conditionPhotos: conditionPhotos,
+          location: locationObj // Current location of the book is now receiver's location
+        },
+        $unset: {
+          pendingTransferAt: "",
+          pendingSenderId: "",
+          pendingSenderName: "",
+          pendingDate: "",
+          pendingTime: "",
+        },
+      },
+    );
+
+    if (updateResult.modifiedCount === 0) {
+      return res.status(400).json({ error: "Failed to confirm transfer." });
+    }
+
+    // Save transfer history
+    await bookTransCollections.insertOne(transHistory);
+
+    // ── Notify the original sender (owner) that the book was received ──
+    const senderId = book.pendingSenderId || book.userId;
+    await sendNotificationToUser(
+      senderId.toString(),
+      "✅ Book Received!",
+      `${receiver.name} has accepted "${book.bookName}" and documented its condition.`,
+      {
+        type: "bookReqAc",
+        bookId: bookId,
+        receiverId: receiver._id.toString(),
+        receiverName: receiver.name,
+      },
+    );
+
+    // ── Emit socket notification to sender ──
+    if (global.io) {
+      global.io.to(senderId.toString()).emit("newNotification", {
+        type: "bookReqAc",
+        senderId: receiver._id,
+        senderName: receiver.name,
+        notifyText: `${receiver.name} received "${book.bookName}" successfully!`,
+        bookId: bookId,
+      });
+    }
+
+    res.status(200).json({
+      message: "Transfer confirmed successfully. Book is now with the receiver.",
+      conditionPhotos: conditionPhotos,
+    });
+  } catch (error) {
+    console.error("Error while confirming book transfer:", error);
+
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+
+    res.status(500).json({ error: "An error occurred while confirming the transfer." });
   }
 });
 
@@ -8113,6 +8277,139 @@ app.post("/books/return", async (req, res) => {
   }
 });
 
+app.get("/books/journey/:bookId", async (req, res) => {
+  const { bookId } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+
+  if (!bookId || !ObjectId.isValid(bookId)) {
+    return res.status(400).json({ error: "Invalid or missing book ID." });
+  }
+
+  const parseToISODate = (dateStr) => {
+    if (!dateStr) return new Date().toISOString();
+    const ts = Date.parse(dateStr);
+    if (!isNaN(ts)) {
+      return new Date(ts).toISOString();
+    }
+    const parts = dateStr.split("/");
+    if (parts.length === 3) {
+      const d = parseInt(parts[0], 10);
+      const m = parseInt(parts[1], 10) - 1;
+      const y = parseInt(parts[2], 10);
+      const parsed = new Date(y, m, d);
+      if (!isNaN(parsed.getTime())) {
+        return parsed.toISOString();
+      }
+    }
+    return new Date().toISOString();
+  };
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    // Get the book
+    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    if (!book) {
+      return res.status(404).json({ error: "Book not found." });
+    }
+
+    // Get the creator/first owner
+    let creator = null;
+    if (ObjectId.isValid(book.userId)) {
+      creator = await usersCollections.findOne({ _id: new ObjectId(book.userId) });
+    }
+    if (!creator) {
+      creator = await usersCollections.findOne({ _id: book.userId });
+    }
+
+    const journey = [];
+
+    // Step 1: Creator of the book
+    const startCoords = book.location?.coordinates || (creator?.userLocation?.coordinates) || [90.3742, 23.7461]; // Dhanmondi default fallback
+    const startLocName = book.location?.locationName || "Dhanmondi, Dhaka";
+    
+    // Normalize transfer date
+    let rawStartDate = book.currentDate;
+    if (book.currentDate && book.currentTime) {
+      // e.g. "12/07/2026", "10:30:15 AM"
+      rawStartDate = `${book.currentDate} ${book.currentTime}`;
+    }
+    
+    journey.push({
+      step: 1,
+      ownerName: creator?.name || book.owner || "Original Owner",
+      ownerAvatar: creator?.profileImage || "https://i.pravatar.cc/80?img=11",
+      phone: creator?.number || "",
+      location: startLocName,
+      coordinates: { lat: parseFloat(startCoords[1]), lng: parseFloat(startCoords[0]) },
+      transferDate: parseToISODate(rawStartDate || book.createdAt),
+      note: "প্রথম মালিক — বইটি বুকশেলফে যুক্ত করেছিলেন",
+    });
+
+    // Step 2+: Retrieve transfers
+    const transfers = await bookTransCollections
+      .find({ bookId: bookId, transfer: "transfer" })
+      .sort({ confirmedAt: 1 })
+      .toArray();
+
+    for (let i = 0; i < transfers.length; i++) {
+      const trans = transfers[i];
+      const stepNum = i + 2;
+
+      let receiver = null;
+      if (ObjectId.isValid(trans.receiveId)) {
+        receiver = await usersCollections.findOne({ _id: new ObjectId(trans.receiveId) });
+      }
+      if (!receiver) {
+        receiver = await usersCollections.findOne({ _id: trans.receiveId });
+      }
+
+      const transCoords = trans.location?.coordinates || (receiver?.userLocation?.coordinates) || startCoords;
+      const transLocName = trans.location?.locationName || "Dhaka";
+      
+      let rawTransDate = trans.transDate;
+      if (trans.transDate && trans.transTime) {
+        rawTransDate = `${trans.transDate} ${trans.transTime}`;
+      }
+
+      journey.push({
+        step: stepNum,
+        ownerName: receiver?.name || trans.receiveName || trans.transName || "Unknown Borrower",
+        ownerAvatar: receiver?.profileImage || `https://i.pravatar.cc/80?img=${10 + stepNum}`,
+        phone: receiver?.number || "",
+        location: transLocName,
+        coordinates: { lat: parseFloat(transCoords[1]), lng: parseFloat(transCoords[0]) },
+        transferDate: parseToISODate(rawTransDate || trans.confirmedAt),
+        note: trans.conditionPhotos && trans.conditionPhotos.length > 0 
+          ? `${stepNum} নম্বর মালিক — বইটির ছবি আপলোড করে সফলভাবে গ্রহণ করা হয়েছে`
+          : `${stepNum} নম্বর মালিক — সফলভাবে হস্তান্তর করা হয়েছে`,
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      _id: book._id,
+      bookName: book.bookName,
+      writer: book.writer,
+      publisher: book.publisher || "অনিন্দ্য প্রকাশ",
+      coverImage: book.imageUrl,
+      category: book.details || "উপن্যাস",
+      journey: journey
+    });
+
+  } catch (error) {
+    console.error("Error generating book journey:", error);
+    if (error.name === "JsonWebTokenError") {
+      return res.status(401).json({ error: "Invalid or expired token." });
+    }
+    res.status(500).json({ error: "An error occurred while generating the book journey." });
+  }
+});
+
 app.get("/books/defaulters", async (req, res) => {
   try {
     const today = new Date();
@@ -8169,6 +8466,7 @@ app.get("/books/defaulters", async (req, res) => {
             daysOverdue: daysOverdue,
             ownerName: book.owner || "",
             ownerId: book.userId || "",
+            conditionPhotos: book.conditionPhotos || [],
             
             // Defaulter user details
             defaulterId: borrower._id,
