@@ -1541,6 +1541,7 @@ const GMINI_API_KEY = process.env.GMINI_API_KEY;
 
     // Location index for books
     await bookCollections.createIndex({ location: "2dsphere" });
+    await onindoBookCollections.createIndex({ location: "2dsphere" });
     console.log("✅ Location index created for books");
 
     // Performance: Indexes for frequently queried fields
@@ -7766,13 +7767,18 @@ app.post("/books/request", async (req, res) => {
     }
 
     // Check if the book exists
-    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    let collection = bookCollections;
+    let book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
     if (!book) {
-      return res.status(404).json({ error: "Book not found." });
+      book = await onindoBookCollections.findOne({ _id: new ObjectId(bookId) });
+      if (!book) {
+        return res.status(404).json({ error: "Book not found." });
+      }
+      collection = onindoBookCollections;
     }
 
     // Update the book with request details
-    const updateResult = await bookCollections.updateOne(
+    const updateResult = await collection.updateOne(
       { _id: new ObjectId(bookId) },
       {
         $set: {
@@ -7834,13 +7840,18 @@ app.post("/books/request/cancel", async (req, res) => {
     }
 
     // Check if the book exists
-    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    let collection = bookCollections;
+    let book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
     if (!book) {
-      return res.status(404).json({ error: "Book not found." });
+      book = await onindoBookCollections.findOne({ _id: new ObjectId(bookId) });
+      if (!book) {
+        return res.status(404).json({ error: "Book not found." });
+      }
+      collection = onindoBookCollections;
     }
 
     // Update the book with request details
-    const updateResult = await bookCollections.updateOne(
+    const updateResult = await collection.updateOne(
       { _id: new ObjectId(bookId) },
       {
         $set: { transfer: "no request", requestBy: "", requestName: "" },
@@ -7897,12 +7908,17 @@ app.post("/books/request/accept", async (req, res) => {
     }
 
     // Check if the book exists
-    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    let collection = bookCollections;
+    let book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
     if (!book) {
-      return res.status(404).json({ error: "Book not found." });
+      book = await onindoBookCollections.findOne({ _id: new ObjectId(bookId) });
+      if (!book) {
+        return res.status(404).json({ error: "Book not found." });
+      }
+      collection = onindoBookCollections;
     }
     // Update the book with request details
-    const updateResult = await bookCollections.updateOne(
+    const updateResult = await collection.updateOne(
       { _id: new ObjectId(bookId) },
       {
         $set: { transfer: "accept" },
@@ -7959,14 +7975,19 @@ app.post("/books/request/trans", async (req, res) => {
     }
 
     // Check if the book exists
-    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    let collection = bookCollections;
+    let book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
     if (!book) {
-      return res.status(404).json({ error: "Book not found." });
+      book = await onindoBookCollections.findOne({ _id: new ObjectId(bookId) });
+      if (!book) {
+        return res.status(404).json({ error: "Book not found." });
+      }
+      collection = onindoBookCollections;
     }
 
     // ── NEW: Set transfer to "transfer_pending" instead of "success" ──
     // The receiver must confirm (with condition photos) to complete the transfer.
-    const updateResult = await bookCollections.updateOne(
+    const updateResult = await collection.updateOne(
       { _id: new ObjectId(bookId) },
       {
         $set: {
@@ -7988,7 +8009,7 @@ app.post("/books/request/trans", async (req, res) => {
     }
 
     // ── Send FCM notification to receiver ──
-    await sendNotificationToUser(
+    await sendPushNotification(
       requestBy,
       "📦 Book is on its way!",
       `${currentUser.name} has sent you "${book.bookName}". Accept it to complete the transfer.`,
@@ -8056,9 +8077,14 @@ app.post("/books/request/confirm", async (req, res) => {
     }
 
     // Find the book
-    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    let collection = bookCollections;
+    let book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
     if (!book) {
-      return res.status(404).json({ error: "Book not found." });
+      book = await onindoBookCollections.findOne({ _id: new ObjectId(bookId) });
+      if (!book) {
+        return res.status(404).json({ error: "Book not found." });
+      }
+      collection = onindoBookCollections;
     }
 
     // Ensure this user is the intended receiver
@@ -8107,18 +8133,27 @@ app.post("/books/request/confirm", async (req, res) => {
       conditionPhotos: conditionPhotos,
       location: locationObj,
       transfer: "transfer",
+      isOnindo: collection === onindoBookCollections,
     };
 
     // Update book to "success", store condition photos and update location
-    const updateResult = await bookCollections.updateOne(
+    // If it's an Onindo book, transfer ownership completely by updating userId and owner
+    const updateFields = {
+      transfer: "success",
+      transferredAt: new Date(),
+      conditionPhotos: conditionPhotos,
+      location: locationObj // Current location of the book is now receiver's location
+    };
+
+    if (collection === onindoBookCollections) {
+      updateFields.userId = receiver._id;
+      updateFields.owner = receiver.name;
+    }
+
+    const updateResult = await collection.updateOne(
       { _id: new ObjectId(bookId) },
       {
-        $set: {
-          transfer: "success",
-          transferredAt: new Date(),
-          conditionPhotos: conditionPhotos,
-          location: locationObj // Current location of the book is now receiver's location
-        },
+        $set: updateFields,
         $unset: {
           pendingTransferAt: "",
           pendingSenderId: "",
@@ -8138,7 +8173,7 @@ app.post("/books/request/confirm", async (req, res) => {
 
     // ── Notify the original sender (owner) that the book was received ──
     const senderId = book.pendingSenderId || book.userId;
-    await sendNotificationToUser(
+    await sendPushNotification(
       senderId.toString(),
       "✅ Book Received!",
       `${receiver.name} has accepted "${book.bookName}" and documented its condition.`,
@@ -8274,6 +8309,140 @@ app.post("/books/return", async (req, res) => {
     res
       .status(500)
       .json({ error: "An error occurred while accepting the book." });
+  }
+});
+
+// ─── Return Workflow ────────────────────────────────────────────────────────
+
+// Holder requests to return the book
+app.post("/books/return/request", async (req, res) => {
+  const { bookId, requestBy, requestName, ownerId } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "No token provided." });
+  if (!bookId || !ObjectId.isValid(bookId)) return res.status(400).json({ error: "Invalid book ID." });
+
+  try {
+    jwt.verify(token, JWT_SECRET);
+    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    if (!book) return res.status(404).json({ error: "Book not found." });
+
+    await bookCollections.updateOne(
+      { _id: new ObjectId(bookId) },
+      { $set: { transfer: "returnRequested" } }
+    );
+
+    if (ownerId && ObjectId.isValid(ownerId)) {
+      await sendPushNotification(
+        ownerId,
+        "Book Return Request",
+        `${requestName} wants to return your book: ${book.bookName}`,
+        { type: "bookReturnReq", bookId },
+        false
+      );
+    }
+
+    res.status(200).json({ success: true, message: "Return request sent." });
+  } catch (error) {
+    console.error("Return request error:", error);
+    res.status(500).json({ error: "Failed to send return request." });
+  }
+});
+
+// Owner accepts the return
+app.post("/books/return/accept", async (req, res) => {
+  const { bookId } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "No token provided." });
+  if (!bookId || !ObjectId.isValid(bookId)) return res.status(400).json({ error: "Invalid book ID." });
+
+  try {
+    jwt.verify(token, JWT_SECRET);
+    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    if (!book) return res.status(404).json({ error: "Book not found." });
+
+    const date = new Date().toLocaleDateString();
+    const time = new Date().toLocaleTimeString();
+
+    const transHistory = {
+      sendId: book.transferTo || book.requestBy,
+      bookImage: book.imageUrl,
+      bookName: book.bookName,
+      bookId: bookId,
+      receiveId: book.userId,
+      transName: book.requestName || "",
+      transDate: date,
+      transTime: time,
+      return: "return",
+      conditionPhotos: book.conditionPhotos || [],
+    };
+
+    const updateResult = await bookCollections.updateOne(
+      { _id: new ObjectId(bookId) },
+      {
+        $set: {
+          transfer: "no request",
+          transferTo: "",
+          requestBy: "",
+          requestName: "",
+          requestFaceUrl: "",
+          conditionPhotos: [],
+        },
+      }
+    );
+
+    if (updateResult.modifiedCount > 0) {
+      await bookTransCollections.insertOne(transHistory);
+      const holderId = book.transferTo || book.requestBy;
+      if (holderId) {
+        await sendPushNotification(
+          holderId,
+          "Book Return Accepted",
+          `Your return of "${book.bookName}" has been accepted.`,
+          { type: "bookReturn", bookId },
+          false
+        );
+      }
+    }
+
+    res.status(200).json({ success: true, message: "Return accepted." });
+  } catch (error) {
+    console.error("Return accept error:", error);
+    res.status(500).json({ error: "Failed to accept return." });
+  }
+});
+
+// Owner rejects the return request
+app.post("/books/return/reject", async (req, res) => {
+  const { bookId } = req.body;
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "No token provided." });
+  if (!bookId || !ObjectId.isValid(bookId)) return res.status(400).json({ error: "Invalid book ID." });
+
+  try {
+    jwt.verify(token, JWT_SECRET);
+    const book = await bookCollections.findOne({ _id: new ObjectId(bookId) });
+    if (!book) return res.status(404).json({ error: "Book not found." });
+
+    await bookCollections.updateOne(
+      { _id: new ObjectId(bookId) },
+      { $set: { transfer: "transferred" } }
+    );
+
+    const holderId = book.transferTo || book.requestBy;
+    if (holderId) {
+      await sendPushNotification(
+        holderId,
+        "Return Request Rejected",
+        `Your return request for "${book.bookName}" was rejected.`,
+        { type: "bookReturnRej", bookId },
+        false
+      );
+    }
+
+    res.status(200).json({ success: true, message: "Return rejected." });
+  } catch (error) {
+    console.error("Return reject error:", error);
+    res.status(500).json({ error: "Failed to reject return." });
   }
 });
 
@@ -8508,6 +8677,7 @@ app.post("/books/onindo/add", async (req, res) => {
       currentDate: bookAllData.currentDate,
       currentTime: bookAllData.currentTime,
       owner: currentUser.name,
+      location: bookAllData.location || null,
     };
     const result = await onindoBookCollections.insertOne(bookData);
     res.send({
@@ -8828,6 +8998,30 @@ app.post("/onindo/books/request/trans", async (req, res) => {
     res
       .status(500)
       .json({ error: "An error occurred while accepting the book." });
+  }
+});
+
+app.get("/books/onindo/user/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) {
+    return res.status(401).json({ error: "Access denied. No token provided." });
+  }
+  try {
+    jwt.verify(token, JWT_SECRET);
+    
+    const query = {
+      $or: [
+        { userId: userId },
+        { userId: ObjectId.isValid(userId) ? new ObjectId(userId) : null }
+      ].filter(Boolean)
+    };
+    
+    const books = await onindoBookCollections.find(query).toArray();
+    res.send({ success: true, data: books });
+  } catch (error) {
+    console.error("Error fetching user onindo books:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
 
@@ -11781,12 +11975,33 @@ app.get("/books/nearby", async (req, res) => {
       ])
       .toArray();
 
+    const nearbyOnindoBooks = await onindoBookCollections
+      .aggregate([
+        {
+          $geoNear: {
+            near: {
+              type: "Point",
+              coordinates: [parseFloat(longitude), parseFloat(latitude)],
+            },
+            distanceField: "distance",
+            maxDistance: parseFloat(maxDistance), // in meters
+            spherical: true,
+          },
+        },
+      ])
+      .toArray();
+
+    const normalBooks = nearbyBooks.map(b => ({ ...b, isOnindo: false }));
+    const onindoBooks = nearbyOnindoBooks.map(b => ({ ...b, isOnindo: true }));
+
+    const allNearby = [...normalBooks, ...onindoBooks].sort((a, b) => a.distance - b.distance);
+
     res.send({
       success: true,
-      data: nearbyBooks,
+      data: allNearby,
     });
 
-    console.log("Nearby books found:", nearbyBooks);
+    console.log(`Nearby books found: ${allNearby.length} (Normal: ${normalBooks.length}, Onindo: ${onindoBooks.length})`);
   } catch (error) {
     console.error("Error fetching nearby books:", error);
     res.status(500).send({
