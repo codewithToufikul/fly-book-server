@@ -7626,6 +7626,7 @@ app.post("/books/add", async (req, res) => {
     });
     const bookData = {
       userId: bookAllData.userId,
+      uploaderId: currentUser._id.toString(),
       bookName: bookAllData.bookName,
       writer: bookAllData.writer,
       details: bookAllData.details,
@@ -7699,9 +7700,10 @@ app.delete("/books/delete/:bookId", async (req, res) => {
         .json({ success: false, message: "Book not found." });
     }
 
-    // Check if current user is the original owner (who added the book)
-    const isOriginalOwner =
-      book.userId?.toString() === currentUser._id.toString();
+    // Check if current user is the original owner (uploader who added the book)
+    const isOriginalOwner = book.uploaderId
+      ? book.uploaderId.toString() === currentUser._id.toString()
+      : book.userId?.toString() === currentUser._id.toString();
 
     if (!isOriginalOwner) {
       return res.status(403).json({
@@ -8670,6 +8672,7 @@ app.post("/books/onindo/add", async (req, res) => {
     });
     const bookData = {
       userId: bookAllData.userId,
+      uploaderId: currentUser._id.toString(),
       bookName: bookAllData.bookName,
       writer: bookAllData.writer,
       details: bookAllData.details,
@@ -8744,9 +8747,10 @@ app.delete("/onindo/delete/:bookId", async (req, res) => {
         .json({ success: false, message: "Book not found." });
     }
 
-    // Check if current user is the original owner (who added the book)
-    const isOriginalOwner =
-      book.userId?.toString() === currentUser._id.toString();
+    // Check if current user is the original owner (uploader who added the book)
+    const isOriginalOwner = book.uploaderId
+      ? book.uploaderId.toString() === currentUser._id.toString()
+      : book.userId?.toString() === currentUser._id.toString();
 
     if (!isOriginalOwner) {
       return res.status(403).json({
